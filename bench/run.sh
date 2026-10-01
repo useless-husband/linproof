@@ -42,7 +42,8 @@ gen kv-100k-100keys  -model kv -ops 100000 -procs 20 -keys 100 -pending 0.01    
   echo "$(date -u +%Y-%m-%d), $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)," \
        "$(sysctl -n hw.ncpu 2>/dev/null || nproc) cores, $(sw_vers -productName 2>/dev/null || uname -s)" \
        "$(sw_vers -productVersion 2>/dev/null || uname -r); $(go version | cut -d' ' -f3);" \
-       "$(lean --version | cut -d',' -f1). Median of $RUNS runs."
+       "$(lean --version | sed -E 's/^Lean \(version ([0-9.]+).*/Lean \1/'). Median of $RUNS runs;" \
+       "the machine was shared with other jobs."
   echo
   echo "## Jepsen etcd histories (cas-register, 102 files)"
   "$pd" bench -linproof "$bin" -model cas-register -runs "$RUNS" "$out"/etcd/*.jsonl > "$out/etcd.txt"

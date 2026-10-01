@@ -7,5 +7,6 @@ import Linproof.Models
 import Linproof.Keyed
 import Linproof.Locality
 import Linproof.Theorems
+import Linproof.Explain
 import Linproof.Json
 import Linproof.History

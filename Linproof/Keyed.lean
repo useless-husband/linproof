@@ -31,22 +31,10 @@ theorem mem_keysOf {h : List (Op (K × ι) ο)} {k : K} :
 
 variable (M : Model σ ι ο) (P : PendingSteps M) [DecidableEq σ] [Hashable σ]
 
-/-- For each key that occurs in the history: the verdict on its operations and the number of
-configurations ruled out. -/
-def checkKeyedResults (h : List (Op (K × ι) ο)) : List (K × Bool × Nat) :=
-  (keysOf h).map fun k => (k, checkWithStats M P (project k h))
-
-/-- **The keyed checker**: every key's history is linearizable. -/
+/-- **The keyed checker**: the history of every key that occurs is linearizable. The
+command-line tool evaluates the `check` calls for different keys in parallel and combines
+them exactly as `List.all` does. -/
 def checkKeyed (h : List (Op (K × ι) ο)) : Bool :=
-  (checkKeyedResults M P h).all (·.2.1)
-
-/-- The keyed verdict together with the per-key results it was computed from, so that the
-command-line tool can report them without checking twice. -/
-def checkKeyedReport (h : List (Op (K × ι) ο)) : Bool × List (K × Bool × Nat) :=
-  let rs := checkKeyedResults M P h
-  (rs.all (·.2.1), rs)
-
-theorem checkKeyedReport_fst (h : List (Op (K × ι) ο)) :
-    (checkKeyedReport M P h).1 = checkKeyed M P h := rfl
+  (keysOf h).all fun k => check M P (project k h)
 
 end Linproof

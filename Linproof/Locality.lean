@@ -619,8 +619,7 @@ locality theorem that decides linearizability of the whole keyed history. -/
 theorem checkKeyed_iff (h : List (Op (K × ι) ο)) (hwf : WellFormed h) :
     checkKeyed M P h = true ↔ Linearizable (Keyed K M) h := by
   rw [Locality.locality M h hwf]
-  simp only [checkKeyed, checkKeyedResults, List.all_map, List.all_eq_true, Function.comp_apply,
-    checkWithStats_fst]
+  simp only [checkKeyed, List.all_eq_true]
   constructor
   · intro H k
     by_cases hk : k ∈ keysOf h

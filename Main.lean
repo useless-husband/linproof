@@ -18,7 +18,7 @@ def usage : String :=
 "linproof — a verified linearizability checker
 
 usage:
-  linproof check [--model M] [--verbose] [--quiet] [--jobs N] [--all-keys] FILE...
+  linproof check [--model M] [--verbose] [--quiet] [--jobs N] [--all-keys] [--timeout S] FILE...
   linproof version
 
 models:
@@ -36,9 +36,10 @@ options:
   --jobs N, -j N check up to N keys in parallel (default 4)
   --all-keys     check every key; by default a keyed history stops at the first key that
                  is not linearizable, which already decides the verdict
+  --timeout S    give up on a file after S seconds and report it as unknown (exit status 3)
 
 exit status: 0 all linearizable, 1 some history not linearizable,
-             2 usage, input or well-formedness error"
+             2 usage, input or well-formedness error, 3 some history unknown (time limit)"
 
 structure Options where
   model : String := "cas-register"
@@ -48,6 +49,7 @@ structure Options where
   noMemo : Bool := false
   jobs : Nat := 4
   allKeys : Bool := false
+  timeout : Option Nat := none
 
 def parseOptions : List String → Options → Except String Options
   | [], o => .ok o
@@ -58,6 +60,11 @@ def parseOptions : List String → Options → Except String Options
   | "-v" :: rest, o => parseOptions rest { o with verbose := true }
   | "--no-memo" :: rest, o => parseOptions rest { o with noMemo := true }
   | "--all-keys" :: rest, o => parseOptions rest { o with allKeys := true }
+  | "--timeout" :: n :: rest, o =>
+    match n.toNat? with
+    | some t => if t ≥ 1 then parseOptions rest { o with timeout := some t }
+                else .error "--timeout needs at least 1 second"
+    | none => .error s!"--timeout needs a number of seconds, not {n}"
   | "--jobs" :: n :: rest, o | "-j" :: n :: rest, o =>
     match n.toNat? with
     | some j => if j ≥ 1 then parseOptions rest { o with jobs := j } else .error "--jobs needs at least 1"
@@ -122,15 +129,35 @@ def describeLine {σ ι ο : Type} (D : Describe σ ι ο) (m : History.Meta) (o
     | none => s!"[{op.call}, -]"
   s!"line {m.line}{proc}: {D.op op.input (op.ret.map (·.2))} {span}"
 
+/-- A task that finishes when the time limit passes, or `none` without a limit. It runs on
+its own thread so that it is not queued behind the checks. -/
+def startTimer (timeout : Option Nat) : IO (Option (Task Unit)) :=
+  match timeout with
+  | none => pure none
+  | some s => do
+    let t ← IO.asTask (prio := .dedicated) (IO.sleep (s * 1000).toUInt32)
+    pure (some (t.map fun _ => ()))
+
+/-- Wait until one of the tasks finishes (returning its value) or the timer does (`none`). -/
+def waitFirst {α : Type} (timer : Option (Task Unit)) (t : Task α) (ts : List (Task α)) :
+    IO (Option α) :=
+  match timer with
+  | none => some <$> IO.waitAny (t :: ts)
+  | some tm => IO.waitAny ((tm.map fun _ => none) :: t.map some :: ts.map (·.map some))
+
 /-- Print why a history (or one key's history) is not linearizable. Diagnostics only. -/
 def printExplanation {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
     (M : Model σ ι ο) (P : PendingSteps M) (D : Describe σ ι ο) (verbose : Bool)
-    (sub : Array (History.Meta × Op ι ο)) (indent : String) : IO Unit := do
+    (timer : Option (Task Unit)) (sub : Array (History.Meta × Op ι ο)) (indent : String) :
+    IO Unit := do
   let h := sub.toList.map (·.2)
-  match explain M P h with
+  let task := Task.spawn (prio := .dedicated) fun _ => explain M P h
+  match ← waitFirst timer task [] with
   | none =>
+    IO.println s!"{indent}(no explanation: the time limit was reached)"
+  | some none =>
     IO.println s!"{indent}(no explanation: the diagnostic search did not find the violation)"
-  | some d =>
+  | some (some d) =>
     let returned := (h.filter (·.ret.isSome)).length
     let path := d.path.reverse
     IO.println s!"{indent}The longest partial linearization found places {d.depth} of the {returned} operations that returned."
@@ -161,18 +188,21 @@ structure KeyResult where
 inductive Outcome where
   | linearizable
   | notLinearizable
+  | unknown
   | error
 
 /-- Check the keys of a keyed history, at most `jobs` at a time. The groups are those of
 `groupByKey`, key `k`'s verdict is `check M P group` (through `checkWithStats`), and the
 history is linearizable iff all of them are `true`: that is `checkKeyed`, covered by
 `checkKeyed_iff`. Unless `all` is set, stop at the first key that is not linearizable (its
-verdict decides the history's). Returns the results that finished (key, verdict, statistic,
-number of operations) and the number of keys. Tasks still running when it stops cannot be
-cancelled (they are pure); `main` exits the process when it is done. -/
+verdict decides the history's); stop too when the timer finishes. Returns the results that
+finished (key, verdict, statistic, number of operations), the number of keys, and whether the
+time limit was reached. Tasks still running when it stops cannot be cancelled (they are
+pure); `main` exits the process when it is done. -/
 def checkKeysParallel {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
     (M : Model σ ι ο) (P : PendingSteps M) (jobs : Nat) (all noMemo : Bool)
-    (kh : List (Op (String × ι) ο)) : IO (Array (String × Bool × Nat × Nat) × Nat) := do
+    (timer : Option (Task Unit)) (kh : List (Op (String × ι) ο)) :
+    IO (Array (String × Bool × Nat × Nat) × Nat × Bool) := do
   let groups := (groupByKey kh).toList.toArray
   let work (g : String × Array (Op ι ο)) : Unit → String × Bool × Nat × Nat := fun _ =>
     if noMemo then (g.1, checkUnmemoised M P g.2.toList, 0, g.2.size)
@@ -182,7 +212,9 @@ def checkKeysParallel {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
   let mut running : List (Task (String × Bool × Nat × Nat)) := []
   let mut next := 0
   let mut results : Array (String × Bool × Nat × Nat) := #[]
-  -- every round finishes at least one task, so `groups.size + 1` rounds are enough
+  let mut timedOut := false
+  -- every round finishes at least one task or ends the loop, so `groups.size + 1` rounds
+  -- are enough
   for _ in [0:groups.size + 1] do
     while running.length < jobs && next < groups.size do
       running := running ++ [Task.spawn (work groups[next]!)]
@@ -190,17 +222,16 @@ def checkKeysParallel {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
     match running with
     | [] => break
     | t :: ts =>
-      let _ ← IO.waitAny (t :: ts)
+      if (← waitFirst timer t ts).isNone then
+        timedOut := true
+        break
       let mut still := []
       for task in running do
         if ← IO.hasFinished task then results := results.push task.get
         else still := still ++ [task]
       running := still
       if !all && results.any (!·.2.1) then break
-  return (results, groups.size)
-
-/-- Evaluate a value before continuing (keeps the timing honest). -/
-@[noinline] def forceIO {α : Type} (a : α) : IO α := pure a
+  return (results, groups.size, timedOut)
 
 /-- Check a history of model `M`, keyed or not, and print the result. -/
 def runModel {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
@@ -230,29 +261,48 @@ def runModel {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
   let kh : List (Op (String × ι) ο) :=
     lines.toList.map fun (m, op) =>
       { call := op.call, input := (m.key.getD "", op.input), ret := op.ret }
-  let (allOk, complete, nkeys, results) ← do
+  let timer ← startTimer opts.timeout
+  -- `outcome` is decided by verified functions only: `check` (through `checkWithStats`, whose
+  -- first component is `check` by definition) or, per key, the same calls that `checkKeyed`
+  -- combines with `List.all`; with `--no-memo` their unmemoised counterparts.
+  let (outcome, complete, nkeys, results) ← do
     if keyed then
-      let (rs, nkeys) ← checkKeysParallel M P opts.jobs opts.allKeys opts.noMemo kh
-      -- linearizable iff every key was checked and every key's verdict is `true`
+      let (rs, nkeys, _) ← checkKeysParallel M P opts.jobs opts.allKeys opts.noMemo timer kh
       let complete := rs.size == nkeys
-      let ok := complete && rs.all (·.2.1)
-      pure (ok, complete, nkeys, rs.toList.map fun (k, ok, configs, n) =>
+      let outcome :=
+        if rs.any (!·.2.1) then Outcome.notLinearizable   -- some key fails: checkKeyed = false
+        else if complete then Outcome.linearizable          -- every key passes: checkKeyed = true
+        else Outcome.unknown                                -- time limit reached first
+      pure (outcome, complete, nkeys, rs.toList.map fun (k, ok, configs, n) =>
         ({ key := some k, ops := n, ok, configs } : KeyResult))
     else
-      let (ok, configs) ← forceIO <| if opts.noMemo then (checkUnmemoised M P ops, 0)
-        else checkWithStats M P ops
-      pure (ok, true, 0, [({ key := none, ops := ops.length, ok, configs } : KeyResult)])
+      let task := Task.spawn (prio := .dedicated) fun _ =>
+        if opts.noMemo then (checkUnmemoised M P ops, 0) else checkWithStats M P ops
+      match ← waitFirst timer task [] with
+      | some (ok, configs) =>
+        pure (if ok then Outcome.linearizable else Outcome.notLinearizable, true, 0,
+          [({ key := none, ops := ops.length, ok, configs } : KeyResult)])
+      | none => pure (Outcome.unknown, false, 0, [])
   let t1 ← IO.monoNanosNow
   let configs := results.foldl (· + ·.configs) 0
+  let word := match outcome with
+    | .linearizable => "linearizable"
+    | .notLinearizable => "not linearizable"
+    | _ => s!"unknown (no verdict within {opts.timeout.getD 0} s)"
   if opts.quiet then
-    IO.println s!"{file}: {if allOk then "linearizable" else "not linearizable"}"
+    IO.println s!"{file}: {word}"
   else
     let pending := (ops.filter (·.ret.isNone)).length
     let keysNote := if keyed then s!", {nkeys} keys" else ""
     IO.println s!"{file}: {ops.length} operations ({pending} never returned){keysNote}, model {name}"
     let stats := if opts.noMemo then "unmemoised" else s!"{configs} configurations ruled out"
-    IO.println s!"{if allOk then "LINEARIZABLE" else "NOT LINEARIZABLE"} ({fmtMs (t1 - t0)}, {stats})"
-    if !allOk then
+    match outcome with
+    | .linearizable => IO.println s!"LINEARIZABLE ({fmtMs (t1 - t0)}, {stats})"
+    | .notLinearizable => IO.println s!"NOT LINEARIZABLE ({fmtMs (t1 - t0)}, {stats})"
+    | _ =>
+      let keysDone := if keyed then s!", {results.length} of {nkeys} keys checked" else ""
+      IO.println s!"UNKNOWN: no verdict within the {opts.timeout.getD 0} s time limit{keysDone}"
+    if outcome matches .notLinearizable then
       if keyed then
         let bad := results.filter (!·.ok)
         if complete then
@@ -263,11 +313,11 @@ def runModel {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
           let k := r.key.getD ""
           IO.println s!"\nkey {Json.quote k} ({r.ops} operations):"
           let sub := lines.filter (·.1.key == some k)
-          printExplanation M P D opts.verbose sub "  "
+          printExplanation M P D opts.verbose timer sub "  "
       else
         IO.println ""
-        printExplanation M P D opts.verbose lines ""
-  return (if allOk then .linearizable else .notLinearizable)
+        printExplanation M P D opts.verbose timer lines ""
+  return outcome
 
 def readInput (file : String) : IO String :=
   if file = "-" then do
@@ -312,7 +362,8 @@ def runCheck (opts : Options) : IO UInt32 := do
   for file in opts.files do
     match ← checkFile opts file with
     | .linearizable => pure ()
-    | .notLinearizable => if status == 0 then status := 1
+    | .notLinearizable => if status == 0 || status == 3 then status := 1
+    | .unknown => if status == 0 then status := 3
     | .error => status := 2
   return status
 

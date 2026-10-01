@@ -120,7 +120,7 @@ Three proved reductions handle them:
    that never returned without changing the state can always be left out of a linearization,
    so the search never tries it. The proof is an induction on the witness: removing such a step
    from a witness leaves a witness. On the 102 Jepsen etcd histories this cut the total time from
-   646 ms to 141 ms.
+   646 ms to 141 ms (single runs during development).
 2. **Read-only operations that never returned are dropped at the start** (`ext_drop`). A model
    may declare inputs read-only (`PendingSteps.readOnly`, with a law); a pending read can never
    be needed.
@@ -132,7 +132,9 @@ Three proved reductions handle them:
    plain search by list equality.
 
 **Candidate order** does not affect the answer, only how soon it is found, and the proofs only
-use which candidates exist. Two orders were measured (milliseconds, `check` time):
+use which candidates exist. Two orders were measured during development (milliseconds of
+`check` time, single runs on the shared machine; `bench/results.md` has medians for the
+current version):
 
 | order                      | 102 etcd histories | kv, 100k ops, 100 keys, 1% crashes | cas, 100k ops, 1% crashes |
 |----------------------------|-------------------:|-----------------------------------:|--------------------------:|
@@ -184,7 +186,8 @@ trusted rather than proved.
 * `Json.lean`, `History.lean`: turning text into operations. Covered by tests
   (`test/LinproofTests.lean`, `test/cli-tests.sh`), not by proofs.
 * `Main.lean`: argument handling, the parallel combination of per-key verdicts (a `List.all`
-  written with tasks), printing.
+  written with tasks), the time limit (a timer task raced against the check; when it wins the
+  answer is "unknown"), printing.
 * The Lean kernel (for the proofs) and the Lean compiler and runtime (for the executable),
   including core and Std code with runtime implementations: `Array`, `Nat`, `String`,
   `Std.HashSet`/`HashMap`, `withPtrEq`.

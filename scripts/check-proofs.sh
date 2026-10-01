@@ -13,11 +13,14 @@ fi
 if grep -nE '^\s*(axiom|unsafe|partial|@\[implemented_by|@\[extern)' Linproof/*.lean Linproof.lean; then
   echo "error: axiom/unsafe/partial/implemented_by/extern declaration found in the library"; fail=1
 fi
+if grep -nE 'set_option\s+debug\.|skipKernelTC' Linproof/*.lean Linproof.lean; then
+  echo "error: a debug option that weakens checking is set in the library"; fail=1
+fi
 
 # 2. The build must not report any use of sorry.
 log=$(mktemp)
 lake build 2>&1 | tee "$log"
-if grep -q "declaration uses 'sorry'" "$log"; then
+if grep -qE "declaration uses .sorry." "$log"; then
   echo "error: the build reports a declaration that uses sorry"; fail=1
 fi
 rm -f "$log"

@@ -2,7 +2,8 @@
 # End-to-end tests of the linproof command-line tool on the files in test/cases.
 #
 # File names encode the expectation: NAME[.MODEL].EXPECT.jsonl, where MODEL is register,
-# cas-register (the default) or kv, and EXPECT is lin (exit 0), bad (exit 1) or err (exit 2).
+# cas-register (the default) or kv, and EXPECT is lin (exit 0), bad (exit 1), err (exit 2) or
+# unk (exit 3 with --timeout 1: the search is exponential on these files).
 # Every lin/bad case is also run with --no-memo, which must agree.
 set -uo pipefail
 
@@ -27,8 +28,15 @@ for f in "$dir"/*.jsonl; do
     lin) want=0 ;;
     bad) want=1 ;;
     err) want=2 ;;
+    unk) want=3 ;;
     *) bad "$f: unknown expectation $expect"; continue ;;
   esac
+  if [ "$want" -eq 3 ]; then
+    "$bin" check --timeout 1 --model "$model" "$f" > /dev/null 2>&1
+    got=$?
+    if [ "$got" -eq 3 ]; then ok; else bad "$f: exit $got, want 3"; fi
+    continue
+  fi
   "$bin" check --model "$model" "$f" > /dev/null 2>&1
   got=$?
   if [ "$got" -eq "$want" ]; then ok; else bad "$f: exit $got, want $want"; fi
@@ -80,7 +88,19 @@ if [ "$out" = "-: linearizable" ]; then ok; else bad "stdin: got '$out'"; fi
 "$bin" check -q "$dir/cas-chain.lin.jsonl" "$dir/empty.lin.jsonl" > /dev/null 2>&1
 [ $? -eq 0 ] && ok || bad "lin + lin should exit 0"
 
+# Time limits: unknown with linearizable is 3, unknown with a violation is 1.
+"$bin" check -q --timeout 1 "$dir/pending-explosion.unk.jsonl" "$dir/cas-chain.lin.jsonl" > /dev/null 2>&1
+[ $? -eq 3 ] && ok || bad "unk + lin should exit 3"
+"$bin" check -q --timeout 1 "$dir/pending-explosion.unk.jsonl" "$dir/stale-read.bad.jsonl" > /dev/null 2>&1
+[ $? -eq 1 ] && ok || bad "unk + bad should exit 1"
+expect_output "time limit message" "UNKNOWN: no verdict within the 1 s time limit" \
+  "$bin" check --timeout 1 "$dir/pending-explosion.unk.jsonl"
+expect_output "a quick history is unaffected by a time limit" "NOT LINEARIZABLE" \
+  "$bin" check --timeout 30 "$dir/stale-read.bad.jsonl"
+
 # Usage errors.
+"$bin" check --timeout 0 x > /dev/null 2>&1
+[ $? -eq 2 ] && ok || bad "--timeout 0 should exit 2"
 "$bin" check --frobnicate x > /dev/null 2>&1
 [ $? -eq 2 ] && ok || bad "unknown option should exit 2"
 "$bin" check --jobs 0 x > /dev/null 2>&1

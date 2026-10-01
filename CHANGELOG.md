@@ -25,7 +25,8 @@ First version.
 
 - `linproof check` for the `register`, `cas-register` and `kv` models, with keys, several
   files, standard input, explanations of violations, parallel key checks (`--jobs`) with early
-  exit (`--all-keys` to disable), and the plain search (`--no-memo`).
+  exit (`--all-keys` to disable), a time limit (`--timeout`, exit status 3), and the plain
+  search (`--no-memo`).
 - JSON-lines history format; `tools/jepsen2jsonl.py` converts Jepsen logs and EDN histories.
 
 ### Evidence

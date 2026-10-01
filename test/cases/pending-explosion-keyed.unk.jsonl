@@ -1,0 +1,32 @@
+{"process": 0, "call": 0, "op": "write", "key": "a", "input": 0}
+{"process": 1, "call": 1, "op": "write", "key": "a", "input": 1}
+{"process": 2, "call": 2, "op": "write", "key": "a", "input": 2}
+{"process": 3, "call": 3, "op": "write", "key": "a", "input": 3}
+{"process": 4, "call": 4, "op": "write", "key": "a", "input": 4}
+{"process": 5, "call": 5, "op": "write", "key": "a", "input": 5}
+{"process": 6, "call": 6, "op": "write", "key": "a", "input": 6}
+{"process": 7, "call": 7, "op": "write", "key": "a", "input": 7}
+{"process": 8, "call": 8, "op": "write", "key": "a", "input": 8}
+{"process": 9, "call": 9, "op": "write", "key": "a", "input": 9}
+{"process": 10, "call": 10, "op": "write", "key": "a", "input": 10}
+{"process": 11, "call": 11, "op": "write", "key": "a", "input": 11}
+{"process": 12, "call": 12, "op": "write", "key": "a", "input": 12}
+{"process": 13, "call": 13, "op": "write", "key": "a", "input": 13}
+{"process": 14, "call": 14, "op": "write", "key": "a", "input": 14}
+{"process": 15, "call": 15, "op": "write", "key": "a", "input": 15}
+{"process": 16, "call": 16, "op": "write", "key": "a", "input": 16}
+{"process": 17, "call": 17, "op": "write", "key": "a", "input": 17}
+{"process": 18, "call": 18, "op": "write", "key": "a", "input": 18}
+{"process": 19, "call": 19, "op": "write", "key": "a", "input": 19}
+{"process": 20, "call": 20, "op": "write", "key": "a", "input": 20}
+{"process": 21, "call": 21, "op": "write", "key": "a", "input": 21}
+{"process": 22, "call": 22, "op": "write", "key": "a", "input": 22}
+{"process": 23, "call": 23, "op": "write", "key": "a", "input": 23}
+{"process": 24, "call": 24, "op": "write", "key": "a", "input": 24}
+{"process": 25, "call": 25, "op": "write", "key": "a", "input": 25}
+{"process": 26, "call": 26, "op": "write", "key": "a", "input": 26}
+{"process": 27, "call": 27, "op": "write", "key": "a", "input": 27}
+{"process": 28, "call": 28, "op": "write", "key": "a", "input": 28}
+{"process": 29, "call": 29, "op": "write", "key": "a", "input": 29}
+{"process": 30, "call": 30, "return": 31, "op": "read", "key": "a", "output": 999}
+{"process": 31, "call": 0, "return": 1, "op": "write", "key": "b", "input": 1}

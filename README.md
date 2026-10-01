@@ -155,16 +155,20 @@ lake build                 # library, proofs and the linproof executable (about 
 ```
 
 ```
-linproof check [--model M] [--verbose] [--quiet] [--jobs N] [--all-keys] [--no-memo] FILE...
+linproof check [--model M] [--verbose] [--quiet] [--jobs N] [--all-keys] [--timeout S]
+               [--no-memo] FILE...
 
   --model        register | cas-register (default) | kv
   --verbose, -v  print the whole partial linearization of a violation, not its end
-  --quiet, -q    one line per file: "FILE: linearizable" or "FILE: not linearizable"
+  --quiet, -q    one line per file: "FILE: linearizable", "not linearizable" or "unknown"
+                 (no explanation, so no second search)
   --jobs N, -j N check up to N keys in parallel (default 4)
   --all-keys     check every key; by default a keyed history stops at the first violating key
+  --timeout S    give up on a file after S seconds and report it as unknown
   --no-memo      the plain search (also verified; exponential, for testing)
 
-exit status: 0 all linearizable, 1 some history not linearizable, 2 usage/input error
+exit status: 0 all linearizable, 1 some history not linearizable, 2 usage/input error,
+             3 some history unknown (time limit reached, no violation found)
 ```
 
 ### History format
@@ -183,11 +187,14 @@ One JSON object per line; blank lines are ignored. `FILE` may be `-` for standar
 | `call` | invocation time, a non-negative integer (required) |
 | `return` | response time; omit it or use `null` if the operation never returned (crashed, timed out): it may or may not have taken effect, and its `output` is ignored |
 | `op`, `input`, `output` | the operation, below |
-| `key` | optional string or integer: operations on different keys are independent objects, checked separately |
+| `key` | optional string or integer: operations on different keys are independent objects, checked separately (an integer key is read as its decimal string, so `1` and `"1"` are the same key) |
 | `process` | optional integer, only used in messages |
 
 Two operations are ordered in real time only if one's `return` is strictly less than the
-other's `call`; equal timestamps mean concurrent, as in Porcupine. Numbers must be integers.
+other's `call`; equal timestamps mean concurrent, as in Porcupine. This also applies to one
+process's consecutive operations, so give distinct timestamps (event positions, as the
+converter does) if a process's response and its next invocation could otherwise tie. Numbers
+must be integers.
 
 | model | `op` | `input` | `output` (when it returned) |
 |---|---|---|---|
@@ -241,8 +248,9 @@ compiled code, and whether the definition says what a reader expects.
   hand-worked histories for every model (stale reads, touching intervals, operations that never
   returned, compare-and-set, duplicates, keys), JSON and history parser cases, and 6,000 random
   histories on which the fast search, the plain search and the explanation must agree.
-* **Command-line tests** ([`test/cli-tests.sh`](test/cli-tests.sh), 53 checks): exit codes,
-  messages with line numbers, standard input, several files, `--no-memo` agreement.
+* **Command-line tests** ([`test/cli-tests.sh`](test/cli-tests.sh), 60 checks): exit codes,
+  messages with line numbers, standard input, several files, time limits, `--no-memo`
+  agreement.
 
 ```sh
 make test     # all of the above except the 30,000-history run (Go and Python 3 needed)
@@ -285,7 +293,12 @@ current choice are in [docs/DESIGN.md](docs/DESIGN.md#operations-that-never-retu
   the one in the file; the theorems say nothing about that. The same holds for the Lean compiler.
 * **Worst-case exponential**, like every exact checker: histories with many concurrent
   operations that never returned, and a violation that only shows late, may not finish
-  (see the benchmark table). There is no timeout option yet; use `timeout(1)`.
+  (see the benchmark table), and memory grows with every configuration ruled out (4.5 GB
+  after 30 seconds on the last benchmark row). Use `--timeout`; the answer is then
+  "unknown", never a guess.
+* **The explanation repeats the search.** For a violation the tool searches a second time to
+  explain it, so a violation that took long to find takes about twice as long to report;
+  `--quiet` skips the explanation.
 * **Key checks cannot be cancelled.** After the first violating key the tool prints and exits,
   which stops the other checks; with several files on one command line, checks left over from
   one file keep running while the next file is checked.

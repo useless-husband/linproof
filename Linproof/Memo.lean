@@ -470,10 +470,11 @@ theorem mem_fcandsP {remP : List (Fin ops.size)} {m : Nat} {s : σ} {x : Fin ops
 set_option linter.unusedVariables false in
 /-- **The executable search.** The remaining operations are split into those that returned
 (`remR`, whose invocations and responses are in the sorted event list `ev`) and those that
-never returned (`remP`, ordered by invocation). Moves of returned operations are tried
-first; operations that never returned are tried only when those fail, so the ones that are
-never needed cost nothing on the way to a linearization. `zh` is the configuration's hash,
-`s` the model state, `V` the memo of failed configurations. -/
+never returned (`remP`, ordered by invocation). Moves of operations that never returned are
+tried first, then moves of returned operations: the order of candidates does not affect the
+answer, only how soon it is found (see `docs/DESIGN.md` for the measurements behind this
+choice). `zh` is the configuration's hash, `s` the model state, `V` the memo of failed
+configurations. -/
 def fsearch (remR remP : List (Fin ops.size)) (ev : List (Ev ops.size)) (zh : UInt64) (s : σ)
     (V : Memo ops (σ := σ)) : Bool × Memo ops (σ := σ) :=
   if V.contains ⟨zh, remR, remP, s⟩ then (false, V)
@@ -481,17 +482,20 @@ def fsearch (remR remP : List (Fin ops.size)) (ev : List (Ev ops.size)) (zh : UI
     match hs : scan ev [] with
     | (_, none) => (true, V)
     | (cs, some m) =>
-      match anyThread (fcandsR M P ops cs s).attach V
-          (fun c V => fsearch (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
-            (zh ^^^ zobrist c.1.1.idx) c.1.2 V) with
+      match anyThread (fcandsP M P ops remP m s).attach V
+          (fun c V => fsearch remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1) c.1.2 V) with
       | (true, V') => (true, V')
       | (false, V') =>
-        match anyThread (fcandsP M P ops remP m s).attach V'
-            (fun c V => fsearch remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1) c.1.2 V) with
+        match anyThread (fcandsR M P ops cs s).attach V'
+            (fun c V => fsearch (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
+              (zh ^^^ zobrist c.1.1.idx) c.1.2 V) with
         | (true, V'') => (true, V'')
         | (false, V'') => (false, V''.insert ⟨zh, remR, remP, s⟩)
 termination_by ev.length + remP.length
 decreasing_by
+  · have hx : c.1.1 ∈ remP := ((mem_fcandsP M P ops).1 c.2).1
+    have := length_erase_lt hx
+    omega
   · obtain ⟨e, he, hc⟩ := List.mem_flatMap.1 c.2
     obtain ⟨_, _, hce⟩ := List.mem_map.1 hc
     rw [← hce]
@@ -501,9 +505,6 @@ decreasing_by
     · have := length_removeEv ops h
       dsimp only at this ⊢
       omega
-  · have hx : c.1.1 ∈ remP := ((mem_fcandsP M P ops).1 c.2).1
-    have := length_erase_lt hx
-    omega
 
 /-- Every configuration in the memo is one from which `search` fails. -/
 def MemoOK (V : Memo ops (σ := σ)) : Prop :=
@@ -600,13 +601,12 @@ theorem fsearch_eq :
           · rw [hP _ hxP]; exact hnd.erase _
           · exact fun y hy => hpend y (List.mem_of_mem_erase hy)
         obtain ⟨h1, h2⟩ := anyThread_spec
-          (fun (c : {x // x ∈ fcandsR M P ops cs s}) =>
-            search M P ops ((remR ++ remP).erase c.1.1.idx) c.1.2)
+          (fun (c : {x // x ∈ fcandsP M P ops remP m s}) =>
+            search M P ops ((remR ++ remP).erase c.1.1) c.1.2)
           (MemoOK M P ops)
-          (fun (c : {x // x ∈ fcandsR M P ops cs s}) V =>
-            fsearch M P ops (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
-              (zh ^^^ zobrist c.1.1.idx) c.1.2 V)
-          _ hrecR V hV
+          (fun (c : {x // x ∈ fcandsP M P ops remP m s}) V =>
+            fsearch M P ops remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1) c.1.2 V)
+          _ hrecP V hV
         -- the fast candidates and `cands` lead to the same answer
         have hany : ((cands M P ops (remR ++ remP) s m).attach.any fun c =>
               search M P ops ((remR ++ remP).erase c.1.1) c.1.2) =
@@ -642,10 +642,10 @@ theorem fsearch_eq :
             · obtain ⟨hx, hcall, hs', hk⟩ := (mem_fcandsP M P ops).1 hc
               exact ⟨(x, s'), (mem_cands M P ops).2
                 ⟨List.mem_append_right _ hx, hcall, hs', hk⟩, hrec⟩
-        rw [hany]
-        rcases hat : anyThread (fcandsR M P ops cs s).attach V
-            (fun c V => fsearch M P ops (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
-              (zh ^^^ zobrist c.1.1.idx) c.1.2 V) with ⟨b, V'⟩
+        rw [hany, Bool.or_comm]
+        rcases hat : anyThread (fcandsP M P ops remP m s).attach V
+            (fun c V => fsearch M P ops remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1)
+              c.1.2 V) with ⟨b, V'⟩
         rw [hat] at h1 h2
         simp only at h1 h2
         cases b with
@@ -653,15 +653,16 @@ theorem fsearch_eq :
         | false =>
           dsimp only
           obtain ⟨h3, h4⟩ := anyThread_spec
-            (fun (c : {x // x ∈ fcandsP M P ops remP m s}) =>
-              search M P ops ((remR ++ remP).erase c.1.1) c.1.2)
+            (fun (c : {x // x ∈ fcandsR M P ops cs s}) =>
+              search M P ops ((remR ++ remP).erase c.1.1.idx) c.1.2)
             (MemoOK M P ops)
-            (fun (c : {x // x ∈ fcandsP M P ops remP m s}) V =>
-              fsearch M P ops remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1) c.1.2 V)
-            _ hrecP V' h2
-          rcases hat2 : anyThread (fcandsP M P ops remP m s).attach V'
-              (fun c V => fsearch M P ops remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1)
-                c.1.2 V) with ⟨b2, V''⟩
+            (fun (c : {x // x ∈ fcandsR M P ops cs s}) V =>
+              fsearch M P ops (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
+                (zh ^^^ zobrist c.1.1.idx) c.1.2 V)
+            _ hrecR V' h2
+          rcases hat2 : anyThread (fcandsR M P ops cs s).attach V'
+              (fun c V => fsearch M P ops (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
+                (zh ^^^ zobrist c.1.1.idx) c.1.2 V) with ⟨b2, V''⟩
           rw [hat2] at h3 h4
           simp only at h3 h4
           rw [← h1, ← h3]
@@ -677,7 +678,7 @@ theorem fsearch_eq :
               show search M P ops (remR ++ remP) s = false
               rw [search_eq, ← hmr]
               simp only
-              rw [hany, ← h1, ← h3]
+              rw [hany, Bool.or_comm, ← h1, ← h3]
               rfl
             · exact h4 k hin
 

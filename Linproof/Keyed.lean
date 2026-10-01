@@ -1,4 +1,5 @@
 import Linproof.Checker
+import Std.Data.HashMap
 
 /-!
 # Keyed histories: checking each key on its own
@@ -29,12 +30,18 @@ theorem mem_keysOf {h : List (Op (K × ι) ο)} {k : K} :
     k ∈ keysOf h ↔ ∃ op ∈ h, op.input.1 = k := by
   simp [keysOf, List.mem_eraseDups]
 
+variable [Hashable K]
+
+/-- The operations of each key, in history order, computed in one pass. -/
+def groupByKey (h : List (Op (K × ι) ο)) : Std.HashMap K (Array (Op ι ο)) :=
+  h.foldl (fun m op => m.insert op.input.1 ((m.getD op.input.1 #[]).push op.unkey)) ∅
+
 variable (M : Model σ ι ο) (P : PendingSteps M) [DecidableEq σ] [Hashable σ]
 
-/-- **The keyed checker**: the history of every key that occurs is linearizable. The
-command-line tool evaluates the `check` calls for different keys in parallel and combines
-them exactly as `List.all` does. -/
+/-- **The keyed checker**: the history of every key that occurs is linearizable. Each group
+of `groupByKey` is `project k h` (`groupByKey_getD`). The command-line tool evaluates the
+`check` calls for different keys in parallel and combines them exactly as `List.all` does. -/
 def checkKeyed (h : List (Op (K × ι) ο)) : Bool :=
-  (keysOf h).all fun k => check M P (project k h)
+  (groupByKey h).toList.all fun kv => check M P kv.2.toList
 
 end Linproof

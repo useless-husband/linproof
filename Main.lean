@@ -163,28 +163,31 @@ inductive Outcome where
   | notLinearizable
   | error
 
-/-- Check the keys of a keyed history, at most `jobs` at a time. Key `k`'s verdict is
-`check M P (project k kh)` (through `checkWithStats`), and the history is linearizable iff all
-of them are `true`: that is `checkKeyed`, covered by `checkKeyed_iff`. Unless `all` is set,
-stop at the first key that is not linearizable (its verdict decides the history's). Returns
-the results that finished and whether every key was checked. Tasks still running when it
-stops cannot be cancelled (they are pure); `main` exits the process when it is done. -/
+/-- Check the keys of a keyed history, at most `jobs` at a time. The groups are those of
+`groupByKey`, key `k`'s verdict is `check M P group` (through `checkWithStats`), and the
+history is linearizable iff all of them are `true`: that is `checkKeyed`, covered by
+`checkKeyed_iff`. Unless `all` is set, stop at the first key that is not linearizable (its
+verdict decides the history's). Returns the results that finished (key, verdict, statistic,
+number of operations) and the number of keys. Tasks still running when it stops cannot be
+cancelled (they are pure); `main` exits the process when it is done. -/
 def checkKeysParallel {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
     (M : Model σ ι ο) (P : PendingSteps M) (jobs : Nat) (all noMemo : Bool)
-    (kh : List (Op (String × ι) ο)) : IO (Array (String × Bool × Nat) × Bool) := do
-  let keys := (keysOf kh).toArray
-  let work (k : String) : Unit → String × Bool × Nat := fun _ =>
-    if noMemo then (k, checkUnmemoised M P (project k kh), 0)
-    else (k, checkWithStats M P (project k kh))
-  let mut running : List (Task (String × Bool × Nat)) := []
+    (kh : List (Op (String × ι) ο)) : IO (Array (String × Bool × Nat × Nat) × Nat) := do
+  let groups := (groupByKey kh).toList.toArray
+  let work (g : String × Array (Op ι ο)) : Unit → String × Bool × Nat × Nat := fun _ =>
+    if noMemo then (g.1, checkUnmemoised M P g.2.toList, 0, g.2.size)
+    else
+      let (ok, configs) := checkWithStats M P g.2.toList
+      (g.1, ok, configs, g.2.size)
+  let mut running : List (Task (String × Bool × Nat × Nat)) := []
   let mut next := 0
-  let mut results : Array (String × Bool × Nat) := #[]
-  -- every round finishes at least one task, so `keys.size + 1` rounds are enough
-  for _ in [0:keys.size + 1] do
-    while running.length < jobs && next < keys.size do
-      running := running ++ [Task.spawn (work keys[next]!)]
+  let mut results : Array (String × Bool × Nat × Nat) := #[]
+  -- every round finishes at least one task, so `groups.size + 1` rounds are enough
+  for _ in [0:groups.size + 1] do
+    while running.length < jobs && next < groups.size do
+      running := running ++ [Task.spawn (work groups[next]!)]
       next := next + 1
-    match h : running with
+    match running with
     | [] => break
     | t :: ts =>
       let _ ← IO.waitAny (t :: ts)
@@ -194,7 +197,7 @@ def checkKeysParallel {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
         else still := still ++ [task]
       running := still
       if !all && results.any (!·.2.1) then break
-  return (results, results.size == keys.size)
+  return (results, groups.size)
 
 /-- Evaluate a value before continuing (keeps the timing honest). -/
 @[noinline] def forceIO {α : Type} (a : α) : IO α := pure a
@@ -227,31 +230,31 @@ def runModel {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
   let kh : List (Op (String × ι) ο) :=
     lines.toList.map fun (m, op) =>
       { call := op.call, input := (m.key.getD "", op.input), ret := op.ret }
-  let (allOk, complete, results) ← do
+  let (allOk, complete, nkeys, results) ← do
     if keyed then
-      let (rs, complete) ← checkKeysParallel M P opts.jobs opts.allKeys opts.noMemo kh
+      let (rs, nkeys) ← checkKeysParallel M P opts.jobs opts.allKeys opts.noMemo kh
       -- linearizable iff every key was checked and every key's verdict is `true`
+      let complete := rs.size == nkeys
       let ok := complete && rs.all (·.2.1)
-      pure (ok, complete, rs.toList.map fun (k, ok, configs) =>
-        ({ key := some k, ops := (project k kh).length, ok, configs } : KeyResult))
+      pure (ok, complete, nkeys, rs.toList.map fun (k, ok, configs, n) =>
+        ({ key := some k, ops := n, ok, configs } : KeyResult))
     else
       let (ok, configs) ← forceIO <| if opts.noMemo then (checkUnmemoised M P ops, 0)
         else checkWithStats M P ops
-      pure (ok, true, [({ key := none, ops := ops.length, ok, configs } : KeyResult)])
+      pure (ok, true, 0, [({ key := none, ops := ops.length, ok, configs } : KeyResult)])
   let t1 ← IO.monoNanosNow
   let configs := results.foldl (· + ·.configs) 0
   if opts.quiet then
     IO.println s!"{file}: {if allOk then "linearizable" else "not linearizable"}"
   else
     let pending := (ops.filter (·.ret.isNone)).length
-    let keysNote := if keyed then s!", {(keysOf kh).length} keys" else ""
+    let keysNote := if keyed then s!", {nkeys} keys" else ""
     IO.println s!"{file}: {ops.length} operations ({pending} never returned){keysNote}, model {name}"
     let stats := if opts.noMemo then "unmemoised" else s!"{configs} configurations ruled out"
     IO.println s!"{if allOk then "LINEARIZABLE" else "NOT LINEARIZABLE"} ({fmtMs (t1 - t0)}, {stats})"
     if !allOk then
       if keyed then
         let bad := results.filter (!·.ok)
-        let nkeys := (keysOf kh).length
         if complete then
           IO.println s!"{bad.length} of {nkeys} keys are not linearizable."
         else

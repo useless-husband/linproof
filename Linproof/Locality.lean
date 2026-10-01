@@ -612,7 +612,35 @@ theorem wellFormed_project {h : List (Op (K × ι) ο)} (hwf : WellFormed h) (k 
 theorem linearizable_nil (M : Model σ ι ο) : Linearizable M [] :=
   ⟨[], [], Completion.nil, List.Perm.refl _, List.Pairwise.nil, trivial⟩
 
-variable (M : Model σ ι ο) (P : PendingSteps M) [DecidableEq σ] [Hashable σ]
+section group
+
+variable [Hashable K]
+
+theorem groupByKey_fold (k : K) :
+    ∀ (l : List (Op (K × ι) ο)) (m : Std.HashMap K (Array (Op ι ο))),
+      ((l.foldl (fun m op => m.insert op.input.1 ((m.getD op.input.1 #[]).push op.unkey)) m).getD
+          k #[]).toList = (m.getD k #[]).toList ++ project k l := by
+  intro l
+  induction l with
+  | nil => intro m; simp [project]
+  | cons a l ih =>
+    intro m
+    rw [List.foldl_cons, ih, Std.HashMap.getD_insert, Locality.project_cons]
+    by_cases hk : a.input.1 = k
+    · subst hk
+      simp
+    · have : (a.input.1 == k) = false := by simpa using hk
+      simp [this, hk]
+
+/-- Each group is the projection of the history on its key. -/
+theorem groupByKey_getD (h : List (Op (K × ι) ο)) (k : K) :
+    ((groupByKey h).getD k #[]).toList = project k h := by
+  rw [groupByKey, groupByKey_fold]
+  simp
+
+end group
+
+variable [Hashable K] (M : Model σ ι ο) (P : PendingSteps M) [DecidableEq σ] [Hashable σ]
 
 /-- **The keyed checker is sound and complete**: it checks each key separately, and by the
 locality theorem that decides linearizability of the whole keyed history. -/
@@ -622,15 +650,26 @@ theorem checkKeyed_iff (h : List (Op (K × ι) ο)) (hwf : WellFormed h) :
   simp only [checkKeyed, List.all_eq_true]
   constructor
   · intro H k
-    by_cases hk : k ∈ keysOf h
-    · exact (check_iff M P _ (wellFormed_project hwf k)).1 (H k hk)
+    rcases hk : (groupByKey h)[k]? with _ | v
     · have : project k h = [] := by
-        rw [project, List.map_eq_nil_iff, List.filter_eq_nil_iff]
-        intro op hop hk'
-        exact hk (mem_keysOf.2 ⟨op, hop, by simpa using hk'⟩)
+        rw [← groupByKey_getD, Std.HashMap.getD_eq_getD_getElem?, hk]
+        rfl
       rw [this]
       exact linearizable_nil M
-  · intro H k _
+    · have hmem := Std.HashMap.mem_toList_iff_getElem?_eq_some.2 hk
+      have hv : v.toList = project k h := by
+        rw [← groupByKey_getD, Std.HashMap.getD_eq_getD_getElem?, hk]
+        rfl
+      have := H (k, v) hmem
+      rw [hv] at this
+      exact (check_iff M P _ (wellFormed_project hwf k)).1 this
+  · rintro H ⟨k, v⟩ hmem
+    have hk := Std.HashMap.mem_toList_iff_getElem?_eq_some.1 hmem
+    have hv : v.toList = project k h := by
+      rw [← groupByKey_getD, Std.HashMap.getD_eq_getD_getElem?, hk]
+      rfl
+    show check M P v.toList = true
+    rw [hv]
     exact (check_iff M P _ (wellFormed_project hwf k)).2 (H k)
 
 end Linproof

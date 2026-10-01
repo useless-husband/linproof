@@ -49,6 +49,19 @@ def casRegisterSteps (init : Val) : PendingSteps (casRegister init) where
         · rintro ⟨o, ho⟩
           cases o <;> simp [casRegister, hse] at ho
           exact ho.symm
+  readOnly i :=
+    match i with
+    | .read => true
+    | _ => false
+  readOnly_spec := by
+    intro i hi s o s' h
+    cases i with
+    | read =>
+      cases o <;> simp [casRegister] at h
+      exact h.2.symm
+    | write _ => simp at hi
+    | cas _ _ => simp at hi
+
 
 /-- Pending steps of the read/write register. A `cas` is not an operation of this object,
 so it can never take effect. -/
@@ -79,6 +92,19 @@ def registerSteps (init : Val) : PendingSteps (register init) where
       simp only [List.not_mem_nil, false_iff, not_exists, register]
       intro o
       cases o <;> simp
+  readOnly i :=
+    match i with
+    | .read => true
+    | _ => false
+  readOnly_spec := by
+    intro i hi s o s' h
+    cases i with
+    | read =>
+      cases o <;> simp [register] at h
+      exact h.2.symm
+    | write _ => simp at hi
+    | cas _ _ => simp at hi
+
 
 /-- Pending steps of one key of the string key-value store. -/
 def kvCellSteps : PendingSteps kvCell where
@@ -111,5 +137,18 @@ def kvCellSteps : PendingSteps kvCell where
       · rintro ⟨o, ho⟩
         cases o <;> simp at ho
         exact ho.symm
+  readOnly i :=
+    match i with
+    | .get => true
+    | _ => false
+  readOnly_spec := by
+    intro i hi s o s' h
+    cases i with
+    | get =>
+      cases o <;> simp [kvCell] at h
+      exact h.2.symm
+    | put _ => simp at hi
+    | append _ => simp at hi
+
 
 end Linproof

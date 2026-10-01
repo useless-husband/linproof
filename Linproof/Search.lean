@@ -27,6 +27,11 @@ may lead to: all `s'` such that *some* output is legal. -/
 structure PendingSteps (M : Model σ ι ο) where
   next : σ → ι → List σ
   next_iff : ∀ s i s', s' ∈ next s i ↔ ∃ o, M.step s i o = some s'
+  /-- Inputs whose operations never change the state, whatever they return (reads). An
+  operation with such an input that never returned can be ignored (`ext_drop`). -/
+  readOnly : ι → Bool := fun _ => false
+  readOnly_spec : ∀ i, readOnly i = true → ∀ s o s', M.step s i o = some s' → s' = s := by
+    intro _ h; cases h
 
 namespace Search
 
@@ -290,6 +295,59 @@ theorem ext_congr {rem rem' : List (Fin ops.size)} {s : σ} (h : ∀ i, i ∈ re
     Ext M ops rem s ↔ Ext M ops rem' s := by
   unfold Ext
   simp only [h]
+
+omit [DecidableEq σ] in
+/-- Running a sequence after removing steps of read-only operations reaches the same
+states: those steps do not change the state. -/
+theorem legal_filter_readOnly {keep : Fin ops.size × ο → Bool} :
+    ∀ (R : List (Fin ops.size × ο)) (s : σ),
+      (∀ p ∈ R, keep p = false → P.readOnly (op ops p.1).input = true) →
+      Legal M s (R.map fun p => ((op ops p.1).input, p.2)) →
+      Legal M s ((R.filter keep).map fun p => ((op ops p.1).input, p.2)) := by
+  intro R
+  induction R with
+  | nil => intro s _ h; exact h
+  | cons p R ih =>
+    intro s hro hleg
+    obtain ⟨s1, hstep, hleg⟩ := hleg
+    have hro' : ∀ q ∈ R, keep q = false → P.readOnly (op ops q.1).input = true :=
+      fun q hq => hro q (List.mem_cons_of_mem _ hq)
+    by_cases hk : keep p = true
+    · rw [List.filter_cons_of_pos hk]
+      exact ⟨s1, hstep, ih s1 hro' hleg⟩
+    · rw [List.filter_cons_of_neg hk]
+      have := P.readOnly_spec _ (hro p (by simp) (by simpa using hk)) s p.2 s1 hstep
+      subst this
+      exact ih _ hro' hleg
+
+omit [DecidableEq σ] in
+/-- Operations that never returned and are read-only can be removed from a configuration:
+they are never needed in a linearization. -/
+theorem ext_drop {rem rem' : List (Fin ops.size)} {s : σ}
+    (hsub : ∀ i, i ∈ rem' → i ∈ rem)
+    (hdrop : ∀ i ∈ rem, i ∉ rem' → (op ops i).ret = none ∧ P.readOnly (op ops i).input = true) :
+    Ext M ops rem s ↔ Ext M ops rem' s := by
+  constructor
+  · rintro ⟨R, hnd, hin, hcov, hout, hpw, hleg⟩
+    let keep : Fin ops.size × ο → Bool := fun p => decide (p.1 ∈ rem')
+    refine ⟨R.filter keep, ?_, ?_, ?_, ?_, hpw.sublist List.filter_sublist, ?_⟩
+    · exact (List.filter_sublist.map Prod.fst).nodup hnd
+    · intro p hp
+      simpa [keep] using (List.mem_filter.1 hp).2
+    · intro i hi t o hr
+      obtain ⟨q, hq, rfl⟩ := List.mem_map.1 (hcov i (hsub i hi) t o hr)
+      exact List.mem_map_of_mem (List.mem_filter.2 ⟨hq, by simpa [keep] using hi⟩)
+    · exact fun p hp => hout p (List.mem_filter.1 hp).1
+    · refine legal_filter_readOnly M P ops R s (fun p hp hk => ?_) hleg
+      have : p.1 ∉ rem' := by simpa [keep] using hk
+      exact (hdrop p.1 (hin p hp) this).2
+  · rintro ⟨R, hnd, hin, hcov, hout, hpw, hleg⟩
+    refine ⟨R, hnd, fun p hp => hsub _ (hin p hp), ?_, hout, hpw, hleg⟩
+    intro i hi t o hr
+    by_cases h : i ∈ rem'
+    · exact hcov i h t o hr
+    · rw [(hdrop i hi h).1] at hr
+      cases hr
 
 /-! ### Correctness of the search -/
 

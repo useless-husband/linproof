@@ -50,35 +50,47 @@ def sortedOps (ops : Array (Op ι ο)) : List (Fin ops.size) :=
 def startRemR (ops : Array (Op ι ο)) : List (Fin ops.size) :=
   (sortedOps ops).filter fun i => (Search.op ops i).ret.isSome
 
-/-- The operations that never returned, by invocation time. -/
+/-- The operations that never returned, by invocation time, except read-only ones, which a
+linearization never needs (`Search.ext_drop`). -/
 def startRemP (ops : Array (Op ι ο)) : List (Fin ops.size) :=
-  (sortedOps ops).filter fun i => !(Search.op ops i).ret.isSome
+  ((sortedOps ops).filter fun i => !(Search.op ops i).ret.isSome).filter
+    fun i => !P.readOnly (Search.op ops i).input
 
 /-- The start configuration's operations: those that returned, then the others. The order
 does not matter for correctness (`Search.ext_congr`); this one makes removing a linearized
 operation cheap, since candidates are among the earliest invocations. -/
-def startRem (ops : Array (Op ι ο)) : List (Fin ops.size) := startRemR ops ++ startRemP ops
+def startRem (ops : Array (Op ι ο)) : List (Fin ops.size) := startRemR ops ++ startRemP M P ops
 
-theorem startRem_nodup (ops : Array (Op ι ο)) : (startRem ops).Nodup :=
-  ((List.filter_append_perm _ _).trans (List.mergeSort_perm _ _)).symm.nodup
-    (List.nodup_finRange _)
+theorem startRem_nodup (ops : Array (Op ι ο)) : (startRem M P ops).Nodup := by
+  have hfull : (startRemR ops ++ (sortedOps ops).filter fun i => !(Search.op ops i).ret.isSome).Nodup :=
+    ((List.filter_append_perm _ _).trans (List.mergeSort_perm _ _)).symm.nodup
+      (List.nodup_finRange _)
+  exact (List.Sublist.append (List.Sublist.refl _) List.filter_sublist).nodup hfull
 
-theorem mem_startRem (ops : Array (Op ι ο)) (i : Fin ops.size) : i ∈ startRem ops :=
-  ((List.filter_append_perm _ _).trans (List.mergeSort_perm _ _)).mem_iff.2 (List.mem_finRange i)
+theorem mem_startRem (ops : Array (Op ι ο)) (i : Fin ops.size) :
+    i ∈ startRem M P ops ↔
+      ¬ ((Search.op ops i).ret = none ∧ P.readOnly (Search.op ops i).input = true) := by
+  simp only [startRem, startRemR, startRemP, sortedOps, List.mem_append, List.mem_filter,
+    List.mem_mergeSort, List.mem_finRange, true_and, Bool.not_eq_true', Option.isSome_eq_false_iff,
+    Option.isNone_iff_eq_none]
+  rcases (Search.op ops i).ret with _ | r <;> simp
 
 variable [DecidableEq σ]
 
 /-- The search without memoisation. Exponential on hard histories, and quadratic even on
 easy ones; kept as the reference the fast search is proved equal to. -/
 def checkUnmemoised (h : List (Op ι ο)) : Bool :=
-  Search.search M P h.toArray (startRem h.toArray) M.init
+  Search.search M P h.toArray (startRem M P h.toArray) M.init
 
 theorem checkUnmemoised_iff (h : List (Op ι ο)) (hwf : WellFormed h) :
     checkUnmemoised M P h = true ↔ Linearizable M h := by
   have hwf' : Search.WF h.toArray := (Bridge.wf_iff h.toArray).2 (by simpa using hwf)
-  rw [checkUnmemoised, Search.search_iff M P h.toArray hwf' _ _ _ rfl (startRem_nodup _),
-    Search.ext_congr M h.toArray (rem' := List.finRange h.toArray.size)
-      (fun i => by simp [mem_startRem]),
+  rw [checkUnmemoised, Search.search_iff M P h.toArray hwf' _ _ _ rfl (startRem_nodup M P _),
+    ← Search.ext_drop M P h.toArray (rem := List.finRange h.toArray.size)
+      (fun i _ => List.mem_finRange i)
+      (fun i _ hi => by
+        rw [mem_startRem M P h.toArray i, Classical.not_not] at hi
+        exact hi),
     Bridge.ext_iff_linearizable, List.toList_toArray]
 
 variable [Hashable σ]
@@ -86,7 +98,7 @@ variable [Hashable σ]
 /-- Run the fast search on a history; returns the verdict and the final memo. -/
 def runSearch (h : List (Op ι ο)) : Bool × Search.Memo h.toArray (σ := σ) :=
   let remR := startRemR h.toArray
-  Search.fsearch M P h.toArray remR (startRemP h.toArray) (Search.events h.toArray remR) 0
+  Search.fsearch M P h.toArray remR (startRemP M P h.toArray) (Search.events h.toArray remR) 0
     M.init ∅
 
 /-- **The checker.** -/
@@ -95,13 +107,13 @@ def check (h : List (Op ι ο)) : Bool :=
 
 /-- The fast memoised checker computes the same function as the plain search. -/
 theorem check_eq_checkUnmemoised (h : List (Op ι ο)) : check M P h = checkUnmemoised M P h := by
-  have hnd := startRem_nodup h.toArray
-  have hinv : Search.FInv h.toArray (startRemR h.toArray) (startRemP h.toArray)
+  have hnd := startRem_nodup M P h.toArray
+  have hinv : Search.FInv h.toArray (startRemR h.toArray) (startRemP M P h.toArray)
       (Search.events h.toArray (startRemR h.toArray)) := by
     refine ⟨Search.evInv_events h.toArray (List.nodup_append.1 hnd).1, hnd, ?_, ?_⟩
     · intro x hx; exact (List.mem_filter.1 hx).2
     · intro x hx
-      have := (List.mem_filter.1 hx).2
+      have := (List.mem_filter.1 (List.mem_filter.1 hx).1).2
       simpa using this
   exact (Search.fsearch_eq M P h.toArray _ _ _ _ _ _ _ rfl hinv
     (Search.memoOK_empty M P h.toArray)).1

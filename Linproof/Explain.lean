@@ -82,7 +82,7 @@ def explain {σ ι ο : Type} [DecidableEq σ] [Hashable σ] (M : Model σ ι ο
   let ops := h.toArray
   let remR := startRemR ops
   let start : Search.Deepest ops.size σ := { depth := 0, path := [], state := M.init, next := [] }
-  match Search.esearch M P ops remR (startRemP ops) (Search.events ops remR) 0 M.init [] 0
+  match Search.esearch M P ops remR (startRemP M P ops) (Search.events ops remR) 0 M.init [] 0
       (∅, start) with
   | (true, _) => none
   | (false, (_, d)) => some d

@@ -446,7 +446,7 @@ abbrev Memo := Std.HashSet (Key ops.size σ)
 /-- The candidate moves of a configuration: each invocation before the first response,
 with each state its operation can lead to. -/
 def fcands (cs : List (Ev ops.size)) (s : σ) : List (Ev ops.size × σ) :=
-  cs.flatMap fun e => (succs M P ops s e.idx).map (e, ·)
+  cs.flatMap fun e => ((succs M P ops s e.idx).filter (keep ops s e.idx)).map (e, ·)
 
 set_option linter.unusedVariables false in
 /-- **The executable search.** `rem` and `ev` describe the remaining operations, `zh` is the
@@ -542,18 +542,20 @@ theorem fsearch_eq :
           · rintro ⟨⟨e, s'⟩, hc, hrec⟩
             obtain ⟨e', he', hce⟩ := List.mem_flatMap.1 hc
             obtain ⟨s'', hs'', hce⟩ := List.mem_map.1 hce
+            rw [List.mem_filter] at hs''
             simp only [Prod.mk.injEq] at hce
             obtain ⟨rfl, rfl⟩ := hce
             obtain ⟨heev, hecall⟩ := hcs1 e' he'
             have hgen := ((hI.2.2.2 e').1 heev).2
             have heq := genuine_call ops hgen hecall
             have hx := (hcs2 e'.idx).1 (heq ▸ he')
-            exact ⟨(e'.idx, s''), (mem_cands M P ops).2 ⟨hx.1, hx.2, hs''⟩, hrec⟩
+            exact ⟨(e'.idx, s''), (mem_cands M P ops).2 ⟨hx.1, hx.2, hs''.1, hs''.2⟩, hrec⟩
           · rintro ⟨⟨x, s'⟩, hc, hrec⟩
-            obtain ⟨hx, hcall, hs'⟩ := (mem_cands M P ops).1 hc
+            obtain ⟨hx, hcall, hs', hk⟩ := (mem_cands M P ops).1 hc
             have he := (hcs2 x).2 ⟨hx, hcall⟩
             refine ⟨(callEv ops x, s'), ?_, hrec⟩
-            exact List.mem_flatMap.2 ⟨callEv ops x, he, List.mem_map.2 ⟨s', hs', rfl⟩⟩
+            exact List.mem_flatMap.2 ⟨callEv ops x, he,
+              List.mem_map.2 ⟨s', List.mem_filter.2 ⟨hs', hk⟩, rfl⟩⟩
         rw [← hany]
         rcases hat : anyThread (fcands M P ops cs s).attach V
             (fun c V => fsearch M P ops (rem.erase c.1.1.idx) (removeEv ops ev c.1.1)

@@ -54,6 +54,8 @@ theorem startRem_nodup (ops : Array (Op ι ο)) : (startRem ops).Nodup :=
 theorem mem_startRem (ops : Array (Op ι ο)) (i : Fin ops.size) : i ∈ startRem ops := by
   simp [startRem, List.mem_mergeSort]
 
+variable [DecidableEq σ]
+
 /-- The search without memoisation. Exponential on hard histories, and quadratic even on
 easy ones; kept as the reference the fast search is proved equal to. -/
 def checkUnmemoised (h : List (Op ι ο)) : Bool :=
@@ -67,7 +69,7 @@ theorem checkUnmemoised_iff (h : List (Op ι ο)) (hwf : WellFormed h) :
       (fun i => by simp [mem_startRem]),
     Bridge.ext_iff_linearizable, List.toList_toArray]
 
-variable [DecidableEq σ] [Hashable σ]
+variable [Hashable σ]
 
 /-- Run the fast search on a history; returns the verdict and the final memo. -/
 def runSearch (h : List (Op ι ο)) : Bool × Search.Memo h.toArray (σ := σ) :=

@@ -48,21 +48,31 @@ def succs (s : σ) (x : Fin ops.size) : List σ :=
 def minRet (rem : List (Fin ops.size)) : Option Nat :=
   (rem.filterMap fun j => (op ops j).ret.map Prod.fst).min?
 
+variable [DecidableEq σ]
+
+/-- A move is worth trying unless it linearizes an operation that never returned without
+changing the state. Such a move can always be left out of a linearization
+(`exists_kept_move`), so the search skips it; for histories with many timed-out operations
+this prunes most of the search space. -/
+def keep (s : σ) (x : Fin ops.size) (s' : σ) : Bool :=
+  (op ops x).ret.isSome || !decide (s' = s)
+
 /-- Candidate moves: minimal operations (invoked no later than `m`, the earliest pending
-response) paired with each state they can lead to. -/
+response) paired with each state they can lead to, except moves that are not kept. -/
 def cands (rem : List (Fin ops.size)) (s : σ) (m : Nat) : List (Fin ops.size × σ) :=
   (rem.filter fun x => decide ((op ops x).call ≤ m)).flatMap
-    fun x => (succs M P ops s x).map (x, ·)
+    fun x => ((succs M P ops s x).filter (keep ops s x)).map (x, ·)
 
 theorem mem_cands {rem : List (Fin ops.size)} {s : σ} {m : Nat} {x : Fin ops.size} {s' : σ} :
-    (x, s') ∈ cands M P ops rem s m ↔ x ∈ rem ∧ (op ops x).call ≤ m ∧ s' ∈ succs M P ops s x := by
+    (x, s') ∈ cands M P ops rem s m ↔
+      x ∈ rem ∧ (op ops x).call ≤ m ∧ s' ∈ succs M P ops s x ∧ keep ops s x s' = true := by
   simp only [cands, List.mem_flatMap, List.mem_filter, List.mem_map, decide_eq_true_eq,
     Prod.mk.injEq]
   constructor
-  · rintro ⟨y, ⟨hy, hc⟩, s'', hs, rfl, rfl⟩
-    exact ⟨hy, hc, hs⟩
-  · rintro ⟨hy, hc, hs⟩
-    exact ⟨x, ⟨hy, hc⟩, s', hs, rfl, rfl⟩
+  · rintro ⟨y, ⟨hy, hc⟩, s'', ⟨hs, hk⟩, rfl, rfl⟩
+    exact ⟨hy, hc, hs, hk⟩
+  · rintro ⟨hy, hc, hs, hk⟩
+    exact ⟨x, ⟨hy, hc⟩, s', ⟨hs, hk⟩, rfl, rfl⟩
 
 theorem length_erase_lt {α : Type} [DecidableEq α] {l : List α} {a : α} (h : a ∈ l) :
     (l.erase a).length < l.length := by
@@ -134,6 +144,7 @@ theorem minimal_iff {rem : List (Fin ops.size)} {m : Nat} (h : minRet ops rem = 
 
 /-! ### The one-step characterisation of `Ext` -/
 
+omit [DecidableEq σ] in
 theorem succs_iff {s s' : σ} {x : Fin ops.size} :
     s' ∈ succs M P ops s x ↔
       ∃ o, (∀ t o', (op ops x).ret = some (t, o') → o = o') ∧ M.step s (op ops x).input o = some s' := by
@@ -150,12 +161,14 @@ theorem succs_iff {s s' : σ} {x : Fin ops.size} :
       rw [ho' t o ⟨rfl, rfl⟩] at h
       exact h
 
+omit [DecidableEq σ] in
 theorem ext_of_done {rem : List (Fin ops.size)} {s : σ} (h : ∀ i ∈ rem, (op ops i).ret = none) :
     Ext M ops rem s := by
   refine ⟨[], by simp, by simp, ?_, by simp, by simp, by simp [Legal]⟩
   intro i hi t o hr
   simp [h i hi] at hr
 
+omit [DecidableEq σ] in
 theorem ext_cons {rem : List (Fin ops.size)} {s s' : σ} {x : Fin ops.size}
     (hnd : rem.Nodup) (hx : x ∈ rem) (hmin : ∀ j ∈ rem, ¬ precedes (op ops j) (op ops x))
     (hs : s' ∈ succs M P ops s x) (hext : Ext M ops (rem.erase x) s') : Ext M ops rem s := by
@@ -186,28 +199,43 @@ theorem ext_cons {rem : List (Fin ops.size)} {s s' : σ} {x : Fin ops.size}
     exact hmin p.1 (List.mem_of_mem_erase (hsub p hp))
   · exact ⟨s', hstep, hleg⟩
 
-theorem ext_iff (hwf : WF ops) {rem : List (Fin ops.size)} {s : σ} (hnd : rem.Nodup) :
-    Ext M ops rem s ↔ (∀ i ∈ rem, (op ops i).ret = none) ∨
-      ∃ x ∈ rem, (∀ j ∈ rem, ¬ precedes (op ops j) (op ops x)) ∧
-        ∃ s' ∈ succs M P ops s x, Ext M ops (rem.erase x) s' := by
-  constructor
-  · rintro ⟨R, hnd', hsub, hcov, hout, hpw, hleg⟩
-    cases R with
-    | nil =>
-      left
-      intro i hi
-      rcases hr : (op ops i).ret with _ | ⟨t, o⟩
-      · rfl
-      · simpa using hcov i hi t o hr
-    | cons p R =>
-      obtain ⟨x, o⟩ := p
-      right
-      have hx : x ∈ rem := hsub (x, o) (by simp)
-      simp only [List.map_cons, List.nodup_cons] at hnd'
-      obtain ⟨hxR, hnd'⟩ := hnd'
-      obtain ⟨s', hstep, hleg⟩ := hleg
-      rw [List.pairwise_cons] at hpw
-      refine ⟨x, hx, ?_, s', ?_, R, hnd', ?_, ?_, ?_, hpw.2, hleg⟩
+/-- From any witness of `Ext rem s`, either nothing that returned remains, or some kept move
+leads to a configuration that can be finished. A witness that starts with a move that is not
+kept (an operation that never returned and leaves the state unchanged) stays a witness
+without it, which is the induction step. -/
+theorem exists_kept_move (hwf : WF ops) {rem : List (Fin ops.size)} {s : σ} (hnd : rem.Nodup) :
+    ∀ R : List (Fin ops.size × ο),
+      (R.map Prod.fst).Nodup →
+      (∀ p ∈ R, p.1 ∈ rem) →
+      (∀ i ∈ rem, ∀ t o, (op ops i).ret = some (t, o) → i ∈ R.map Prod.fst) →
+      (∀ p ∈ R, ∀ t o, (op ops p.1).ret = some (t, o) → p.2 = o) →
+      R.Pairwise (fun a b => ¬ precedes (op ops b.1) (op ops a.1)) →
+      Legal M s (R.map fun p => ((op ops p.1).input, p.2)) →
+      (∀ i ∈ rem, (op ops i).ret = none) ∨
+        ∃ x ∈ rem, (∀ j ∈ rem, ¬ precedes (op ops j) (op ops x)) ∧
+          ∃ s' ∈ succs M P ops s x, keep ops s x s' = true ∧ Ext M ops (rem.erase x) s' := by
+  intro R
+  induction R with
+  | nil =>
+    intro _ _ hcov _ _ _
+    left
+    intro i hi
+    rcases hr : (op ops i).ret with _ | ⟨t, o⟩
+    · rfl
+    · simpa using hcov i hi t o hr
+  | cons p R ih =>
+    intro hnd' hsub hcov hout hpw hleg
+    obtain ⟨x, o⟩ := p
+    have hx : x ∈ rem := hsub (x, o) (by simp)
+    have hnd'' := hnd'
+    simp only [List.map_cons, List.nodup_cons] at hnd''
+    obtain ⟨hxR, hndR⟩ := hnd''
+    obtain ⟨s', hstep, hlegR⟩ := hleg
+    have hpw' := hpw
+    rw [List.pairwise_cons] at hpw'
+    by_cases hk : keep ops s x s' = true
+    · right
+      refine ⟨x, hx, ?_, s', ?_, hk, R, hndR, ?_, ?_, ?_, hpw'.2, hlegR⟩
       · -- `x` is minimal: a predecessor in `rem` returned, so it is in `R`, hence after `x`.
         intro j hj hp
         rcases hr : (op ops j).ret with _ | ⟨t, o'⟩
@@ -219,7 +247,7 @@ theorem ext_iff (hwf : WF ops) {rem : List (Fin ops.size)} {s : σ} (hnd : rem.N
             simp only [precedes, hr] at hp
             omega
           · obtain ⟨q, hq, rfl⟩ := List.mem_map.1 hjR
-            exact hpw.1 q hq hp
+            exact hpw'.1 q hq hp
       · exact (succs_iff M P ops).2 ⟨o, hout (x, o) (by simp), hstep⟩
       · intro q hq
         have hq1 : q.1 ≠ x := fun h => hxR (h ▸ List.mem_map_of_mem hq)
@@ -231,10 +259,32 @@ theorem ext_iff (hwf : WF ops) {rem : List (Fin ops.size)} {s : σ} (hnd : rem.N
         · exact h
       · intro q hq t o' hr
         exact hout q (List.mem_cons_of_mem _ hq) t o' hr
-  · rintro (hdone | ⟨x, hx, hmin, s', hs, hext⟩)
+    · -- `x` never returned and left the state unchanged: drop it from the witness.
+      simp only [keep, Bool.or_eq_true, Bool.not_eq_true', decide_eq_false_iff_not,
+        not_or, Bool.not_eq_true, Option.isSome_eq_false_iff, Option.isNone_iff_eq_none,
+        Decidable.not_not] at hk
+      obtain ⟨hxpend, rfl⟩ := hk
+      refine ih hndR (fun q hq => hsub q (List.mem_cons_of_mem _ hq)) ?_
+        (fun q hq => hout q (List.mem_cons_of_mem _ hq)) hpw'.2 hlegR
+      intro i hi t o' hr
+      rcases List.mem_cons.1 (hcov i hi t o' hr) with h | h
+      · subst h
+        rw [hxpend] at hr
+        cases hr
+      · exact h
+
+theorem ext_iff (hwf : WF ops) {rem : List (Fin ops.size)} {s : σ} (hnd : rem.Nodup) :
+    Ext M ops rem s ↔ (∀ i ∈ rem, (op ops i).ret = none) ∨
+      ∃ x ∈ rem, (∀ j ∈ rem, ¬ precedes (op ops j) (op ops x)) ∧
+        ∃ s' ∈ succs M P ops s x, keep ops s x s' = true ∧ Ext M ops (rem.erase x) s' := by
+  constructor
+  · rintro ⟨R, hnd', hsub, hcov, hout, hpw, hleg⟩
+    exact exists_kept_move M P ops hwf hnd R hnd' hsub hcov hout hpw hleg
+  · rintro (hdone | ⟨x, hx, hmin, s', hs, -, hext⟩)
     · exact ext_of_done M ops hdone
     · exact ext_cons M P ops hnd hx hmin hs hext
 
+omit [DecidableEq σ] in
 /-- `Ext` depends only on which operations remain, not on their order in `rem`. -/
 theorem ext_congr {rem rem' : List (Fin ops.size)} {s : σ} (h : ∀ i, i ∈ rem ↔ i ∈ rem') :
     Ext M ops rem s ↔ Ext M ops rem' s := by
@@ -269,13 +319,13 @@ theorem search_iff (hwf : WF ops) :
       simp only [hnot, false_or]
       constructor
       · rintro ⟨⟨⟨x, s'⟩, hc⟩, hrec⟩
-        obtain ⟨hx, hcall, hs⟩ := (mem_cands M P ops).1 hc
+        obtain ⟨hx, hcall, hs, hk⟩ := (mem_cands M P ops).1 hc
         have hlt : (rem.erase x).length < n := hlen ▸ length_erase_lt hx
-        refine ⟨x, hx, (minimal_iff ops hm x).2 hcall, s', hs, ?_⟩
+        refine ⟨x, hx, (minimal_iff ops hm x).2 hcall, s', hs, hk, ?_⟩
         exact (ih _ hlt (rem.erase x) s' rfl (hnd.erase x)).1 hrec
-      · rintro ⟨x, hx, hmin, s', hs, hext⟩
+      · rintro ⟨x, hx, hmin, s', hs, hk, hext⟩
         have hc : (x, s') ∈ cands M P ops rem s m :=
-          (mem_cands M P ops).2 ⟨hx, (minimal_iff ops hm x).1 hmin, hs⟩
+          (mem_cands M P ops).2 ⟨hx, (minimal_iff ops hm x).1 hmin, hs, hk⟩
         have hlt : (rem.erase x).length < n := hlen ▸ length_erase_lt hx
         exact ⟨⟨(x, s'), hc⟩, (ih _ hlt (rem.erase x) s' rfl (hnd.erase x)).2 hext⟩
 

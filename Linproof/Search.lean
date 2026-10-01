@@ -235,6 +235,12 @@ theorem ext_iff (hwf : WF ops) {rem : List (Fin ops.size)} {s : σ} (hnd : rem.N
     · exact ext_of_done M ops hdone
     · exact ext_cons M P ops hnd hx hmin hs hext
 
+/-- `Ext` depends only on which operations remain, not on their order in `rem`. -/
+theorem ext_congr {rem rem' : List (Fin ops.size)} {s : σ} (h : ∀ i, i ∈ rem ↔ i ∈ rem') :
+    Ext M ops rem s ↔ Ext M ops rem' s := by
+  unfold Ext
+  simp only [h]
+
 /-! ### Correctness of the search -/
 
 theorem search_eq (rem : List (Fin ops.size)) (s : σ) :

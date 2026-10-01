@@ -36,7 +36,7 @@ lint: proofs
 diff: build
 	cd test/porcupine && go build -o ../../.lake/build/bin/porcupine-diff .
 	for m in register cas-register kv; do \
-		.lake/build/bin/porcupine-diff diff -linproof $(BIN) -model $$m -seed 1 -n $(DIFF_N) | tail -2 || exit 1; \
+		.lake/build/bin/porcupine-diff diff -linproof $(BIN) -model $$m -seed 1 -n $(DIFF_N) || exit 1; \
 	done
 
 bench: build

@@ -1,0 +1,6 @@
+{"process": 0, "call": 0, "return": 3, "op": "put", "key": "a", "input": "x"}
+{"process": 1, "call": 1, "return": 4, "op": "append", "key": "b", "input": "1"}
+{"process": 2, "call": 2, "return": 5, "op": "append", "key": "b", "input": "2"}
+{"process": 0, "call": 6, "return": 7, "op": "get", "key": "a", "output": "x"}
+{"process": 1, "call": 6, "return": 8, "op": "get", "key": "b", "output": "21"}
+{"process": 2, "call": 9, "return": 10, "op": "get", "key": "c", "output": ""}

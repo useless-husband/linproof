@@ -1,0 +1,3 @@
+{"call": 0, "return": 1, "op": "write", "key": 1, "input": 5}
+{"call": 0, "return": 1, "op": "write", "key": 2, "input": 6}
+{"call": 2, "return": 3, "op": "read", "key": 1, "output": 6}

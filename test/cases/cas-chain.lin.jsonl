@@ -1,0 +1,5 @@
+{"process": 0, "call": 0, "return": 1, "op": "write", "input": 0}
+{"process": 1, "call": 2, "return": 3, "op": "cas", "input": [0, 1], "output": true}
+{"process": 2, "call": 4, "return": 5, "op": "cas", "input": [0, 2], "output": false}
+{"process": 0, "call": 6, "return": 7, "op": "cas", "input": [1, "done"], "output": true}
+{"process": 1, "call": 8, "return": 9, "op": "read", "output": "done"}

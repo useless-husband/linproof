@@ -12,3 +12,8 @@ name = "Linproof"
 [[lean_exe]]
 name = "linproof"
 root = "Main"
+
+[[lean_exe]]
+name = "linproof-tests"
+srcDir = "test"
+root = "LinproofTests"

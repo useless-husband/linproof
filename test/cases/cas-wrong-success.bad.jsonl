@@ -1,0 +1,2 @@
+{"process": 0, "call": 0, "return": 1, "op": "write", "input": 0}
+{"process": 1, "call": 2, "return": 3, "op": "cas", "input": [5, 1], "output": true}

@@ -1,0 +1,2 @@
+{"call": 0, "return": 1, "op": "put", "key": "鍵", "input": "值 é 😀"}
+{"call": 2, "return": 3, "op": "get", "key": "鍵", "output": "值 é 😀"}

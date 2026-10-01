@@ -62,6 +62,14 @@ def check (h : List (Op ι ο)) : Bool :=
 theorem check_eq_checkUnmemoised (h : List (Op ι ο)) : check M P h = checkUnmemoised M P h :=
   (Search.msearch_eq M P h.toArray _ _ _ _ rfl (Search.memoOK_empty M P h.toArray)).1
 
+/-- The checker's verdict together with the number of configurations it ruled out (the size
+of the memo), for reporting. The verdict is `check` by definition. -/
+def checkWithStats (h : List (Op ι ο)) : Bool × Nat :=
+  let r := Search.msearch M P h.toArray (List.finRange h.toArray.size) M.init ∅
+  (r.1, r.2.size)
+
+theorem checkWithStats_fst (h : List (Op ι ο)) : (checkWithStats M P h).1 = check M P h := rfl
+
 /-- **Soundness and completeness.** On a well-formed history, the checker answers `true`
 exactly when the history is linearizable. -/
 theorem check_iff (h : List (Op ι ο)) (hwf : WellFormed h) :

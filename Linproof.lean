@@ -3,3 +3,7 @@ import Linproof.Search
 import Linproof.Memo
 import Linproof.Bridge
 import Linproof.Checker
+import Linproof.Models
+import Linproof.Keyed
+import Linproof.Json
+import Linproof.History

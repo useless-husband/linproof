@@ -1,0 +1,14 @@
+name = "linproof"
+version = "0.1.0"
+defaultTargets = ["Linproof", "linproof"]
+
+[leanOptions]
+autoImplicit = false
+relaxedAutoImplicit = false
+
+[[lean_lib]]
+name = "Linproof"
+
+[[lean_exe]]
+name = "linproof"
+root = "Main"

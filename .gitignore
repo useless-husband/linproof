@@ -1,0 +1,8 @@
+/.lake/
+/build/
+*.olean
+# local scratch output
+/bench/out/
+/test/porcupine/linproof-diff
+/test/porcupine/*.test
+.DS_Store

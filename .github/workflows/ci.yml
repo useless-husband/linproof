@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  proofs:
+    name: proofs and axioms
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install elan (the Lean version comes from lean-toolchain)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: build, reject sorry, print axioms
+        run: ./scripts/check-proofs.sh
+
+  test:
+    name: tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install elan
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: test/porcupine/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: lake build
+      - name: Lean runtime tests
+        run: make test-lean
+      - name: command-line tests
+        run: make test-cli
+      - name: converter tests
+        run: make test-tools
+      - name: differential test against Porcupine and Porcupine's test data
+        run: make test-porcupine DIFF_N=2000
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: test/porcupine/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l test/porcupine | tee /dev/stderr)"
+      - name: go vet
+        run: cd test/porcupine && go vet ./...
+      - name: go mod tidy
+        run: cd test/porcupine && go mod tidy && git diff --exit-code go.mod go.sum

@@ -40,4 +40,13 @@ def checkKeyedResults (h : List (Op (K × ι) ο)) : List (K × Bool × Nat) :=
 def checkKeyed (h : List (Op (K × ι) ο)) : Bool :=
   (checkKeyedResults M P h).all (·.2.1)
 
+/-- The keyed verdict together with the per-key results it was computed from, so that the
+command-line tool can report them without checking twice. -/
+def checkKeyedReport (h : List (Op (K × ι) ο)) : Bool × List (K × Bool × Nat) :=
+  let rs := checkKeyedResults M P h
+  (rs.all (·.2.1), rs)
+
+theorem checkKeyedReport_fst (h : List (Op (K × ι) ο)) :
+    (checkKeyedReport M P h).1 = checkKeyed M P h := rfl
+
 end Linproof

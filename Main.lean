@@ -84,21 +84,24 @@ def runModel {σ ι ο : Type} [DecidableEq σ] [Hashable σ]
     | none => IO.eprintln s!"{file}: the history is not well formed"
     return .error
   let t0 ← IO.monoNanosNow
-  let results : List KeyResult :=
+  -- The verdict `allOk` is computed by a verified function: `check` (through
+  -- `checkWithStats`, whose first component is `check` by definition), `checkKeyed` (through
+  -- `checkKeyedReport`, likewise), or their unmemoised counterparts with `--no-memo`.
+  let kh : List (Op (String × ι) ο) :=
+    lines.toList.map fun (m, op) =>
+      { call := op.call, input := (m.key.getD "", op.input), ret := op.ret }
+  let (allOk, results) : Bool × List KeyResult :=
     if keyed then
-      let kh : List (Op (String × ι) ο) :=
-        lines.toList.map fun (m, op) =>
-          { call := op.call, input := (m.key.getD "", op.input), ret := op.ret }
-      let rs := if opts.noMemo then
-          (keysOf kh).map fun k => (k, checkUnmemoised M P (project k kh), 0)
-        else checkKeyedResults M P kh
-      rs.map fun (k, ok, configs) => { key := some k, ops := (project k kh).length, ok, configs }
+      let (ok, rs) := if opts.noMemo then
+          let rs := (keysOf kh).map fun k => (k, checkUnmemoised M P (project k kh), 0)
+          (rs.all (·.2.1), rs)
+        else checkKeyedReport M P kh
+      (ok, rs.map fun (k, ok, configs) =>
+        { key := some k, ops := (project k kh).length, ok, configs })
     else
       let (ok, configs) := if opts.noMemo then (checkUnmemoised M P ops, 0)
         else checkWithStats M P ops
-      [{ key := none, ops := ops.length, ok, configs }]
-  -- force the evaluation before reading the clock again
-  let allOk := results.all (·.ok)
+      (ok, [{ key := none, ops := ops.length, ok, configs }])
   let configs := results.foldl (· + ·.configs) 0
   let t1 ← IO.monoNanosNow
   if opts.quiet then

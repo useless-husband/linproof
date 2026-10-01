@@ -42,17 +42,29 @@ theorem isWellFormed_iff (h : List (Op ι ο)) : isWellFormed h = true ↔ WellF
 
 variable (M : Model σ ι ο) (P : PendingSteps M)
 
-/-- The operations, ordered by invocation time. The order does not matter for correctness
-(`Search.ext_congr`); it makes removing a linearized operation cheap, since candidates are
-always among the earliest invocations. -/
-def startRem (ops : Array (Op ι ο)) : List (Fin ops.size) :=
+/-- The operations, ordered by invocation time. -/
+def sortedOps (ops : Array (Op ι ο)) : List (Fin ops.size) :=
   (List.finRange ops.size).mergeSort fun a b => decide ((Search.op ops a).call ≤ (Search.op ops b).call)
 
-theorem startRem_nodup (ops : Array (Op ι ο)) : (startRem ops).Nodup :=
-  (List.mergeSort_perm _ _).symm.nodup (List.nodup_finRange _)
+/-- The operations that returned, by invocation time. -/
+def startRemR (ops : Array (Op ι ο)) : List (Fin ops.size) :=
+  (sortedOps ops).filter fun i => (Search.op ops i).ret.isSome
 
-theorem mem_startRem (ops : Array (Op ι ο)) (i : Fin ops.size) : i ∈ startRem ops := by
-  simp [startRem, List.mem_mergeSort]
+/-- The operations that never returned, by invocation time. -/
+def startRemP (ops : Array (Op ι ο)) : List (Fin ops.size) :=
+  (sortedOps ops).filter fun i => !(Search.op ops i).ret.isSome
+
+/-- The start configuration's operations: those that returned, then the others. The order
+does not matter for correctness (`Search.ext_congr`); this one makes removing a linearized
+operation cheap, since candidates are among the earliest invocations. -/
+def startRem (ops : Array (Op ι ο)) : List (Fin ops.size) := startRemR ops ++ startRemP ops
+
+theorem startRem_nodup (ops : Array (Op ι ο)) : (startRem ops).Nodup :=
+  ((List.filter_append_perm _ _).trans (List.mergeSort_perm _ _)).symm.nodup
+    (List.nodup_finRange _)
+
+theorem mem_startRem (ops : Array (Op ι ο)) (i : Fin ops.size) : i ∈ startRem ops :=
+  ((List.filter_append_perm _ _).trans (List.mergeSort_perm _ _)).mem_iff.2 (List.mem_finRange i)
 
 variable [DecidableEq σ]
 
@@ -73,17 +85,26 @@ variable [Hashable σ]
 
 /-- Run the fast search on a history; returns the verdict and the final memo. -/
 def runSearch (h : List (Op ι ο)) : Bool × Search.Memo h.toArray (σ := σ) :=
-  let rem := startRem h.toArray
-  Search.fsearch M P h.toArray rem (Search.events h.toArray rem) 0 M.init ∅
+  let remR := startRemR h.toArray
+  Search.fsearch M P h.toArray remR (startRemP h.toArray) (Search.events h.toArray remR) 0
+    M.init ∅
 
 /-- **The checker.** -/
 def check (h : List (Op ι ο)) : Bool :=
   (runSearch M P h).1
 
 /-- The fast memoised checker computes the same function as the plain search. -/
-theorem check_eq_checkUnmemoised (h : List (Op ι ο)) : check M P h = checkUnmemoised M P h :=
-  (Search.fsearch_eq M P h.toArray _ _ _ _ _ _ rfl
-    (Search.evInv_events h.toArray (startRem_nodup _)) (Search.memoOK_empty M P h.toArray)).1
+theorem check_eq_checkUnmemoised (h : List (Op ι ο)) : check M P h = checkUnmemoised M P h := by
+  have hnd := startRem_nodup h.toArray
+  have hinv : Search.FInv h.toArray (startRemR h.toArray) (startRemP h.toArray)
+      (Search.events h.toArray (startRemR h.toArray)) := by
+    refine ⟨Search.evInv_events h.toArray (List.nodup_append.1 hnd).1, hnd, ?_, ?_⟩
+    · intro x hx; exact (List.mem_filter.1 hx).2
+    · intro x hx
+      have := (List.mem_filter.1 hx).2
+      simpa using this
+  exact (Search.fsearch_eq M P h.toArray _ _ _ _ _ _ _ rfl hinv
+    (Search.memoOK_empty M P h.toArray)).1
 
 /-- The checker's verdict together with the number of configurations it ruled out (the size
 of the memo), for reporting. The verdict is `check` by definition. -/

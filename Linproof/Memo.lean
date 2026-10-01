@@ -411,16 +411,18 @@ def listEqS {α : Type} [DecidableEq α] : (l₁ l₂ : List α) → {b : Bool /
       show (decide (a = b) && (listEqS as bs).1) = true ↔ _
       rw [Bool.and_eq_true, decide_eq_true_eq, (listEqS as bs).2, List.cons.injEq]⟩
 
-/-- Memo keys: the configuration (remaining operations and state) and its hash. -/
+/-- Memo keys: the configuration (remaining operations that returned, remaining operations
+that did not, and the state) and its hash. -/
 structure Key (n : Nat) (σ : Type) where
   zh : UInt64
-  rem : List (Fin n)
+  remR : List (Fin n)
+  remP : List (Fin n)
   s : σ
 
-/-- Keys are equal when all their fields are; the hash is compared first, the remaining
-operations last. -/
+/-- Keys are equal when all their fields are; the hash is compared first, the lists last. -/
 def Key.beq {n : Nat} {σ : Type} [DecidableEq σ] (a b : Key n σ) : Bool :=
-  decide (a.zh = b.zh) && decide (a.s = b.s) && (listEqS a.rem b.rem).1
+  decide (a.zh = b.zh) && decide (a.s = b.s) && (listEqS a.remR b.remR).1 &&
+    (listEqS a.remP b.remP).1
 
 instance {n : Nat} {σ : Type} [DecidableEq σ] : BEq (Key n σ) := ⟨Key.beq⟩
 
@@ -428,12 +430,12 @@ instance {n : Nat} {σ : Type} [DecidableEq σ] : LawfulBEq (Key n σ) where
   eq_of_beq {a b} h := by
     change Key.beq a b = true at h
     simp only [Key.beq, Bool.and_eq_true, decide_eq_true_eq, (listEqS _ _).2] at h
-    obtain ⟨⟨h1, h2⟩, h3⟩ := h
+    obtain ⟨⟨⟨h1, h2⟩, h3⟩, h4⟩ := h
     cases a; cases b
     simp_all
   rfl {a} := by
     change Key.beq a a = true
-    simp [Key.beq, (listEqS a.rem a.rem).2]
+    simp [Key.beq, (listEqS a.remR a.remR).2, (listEqS a.remP a.remP).2]
 
 instance {n : Nat} {σ : Type} [Hashable σ] : Hashable (Key n σ) :=
   ⟨fun k => mixHash k.zh (hash k.s)⟩
@@ -443,60 +445,106 @@ variable [DecidableEq σ] [Hashable σ]
 /-- The set of configurations known to fail. -/
 abbrev Memo := Std.HashSet (Key ops.size σ)
 
-/-- The candidate moves of a configuration: each invocation before the first response,
-with each state its operation can lead to. -/
-def fcands (cs : List (Ev ops.size)) (s : σ) : List (Ev ops.size × σ) :=
+/-- Candidate moves of operations that returned: each invocation before the first response,
+with each state its operation can lead to (moves that are not kept are skipped). -/
+def fcandsR (cs : List (Ev ops.size)) (s : σ) : List (Ev ops.size × σ) :=
   cs.flatMap fun e => ((succs M P ops s e.idx).filter (keep ops s e.idx)).map (e, ·)
 
+/-- Candidate moves of operations that never returned: those invoked no later than `m`. -/
+def fcandsP (remP : List (Fin ops.size)) (m : Nat) (s : σ) : List (Fin ops.size × σ) :=
+  (remP.filter fun x => decide ((op ops x).call ≤ m)).flatMap
+    fun x => ((succs M P ops s x).filter (keep ops s x)).map (x, ·)
+
+omit [Hashable σ] in
+theorem mem_fcandsP {remP : List (Fin ops.size)} {m : Nat} {s : σ} {x : Fin ops.size} {s' : σ} :
+    (x, s') ∈ fcandsP M P ops remP m s ↔
+      x ∈ remP ∧ (op ops x).call ≤ m ∧ s' ∈ succs M P ops s x ∧ keep ops s x s' = true := by
+  simp only [fcandsP, List.mem_flatMap, List.mem_filter, List.mem_map, decide_eq_true_eq,
+    Prod.mk.injEq]
+  constructor
+  · rintro ⟨y, ⟨hy, hc⟩, s'', ⟨hs, hk⟩, rfl, rfl⟩
+    exact ⟨hy, hc, hs, hk⟩
+  · rintro ⟨hy, hc, hs, hk⟩
+    exact ⟨x, ⟨hy, hc⟩, s', ⟨hs, hk⟩, rfl, rfl⟩
+
 set_option linter.unusedVariables false in
-/-- **The executable search.** `rem` and `ev` describe the remaining operations, `zh` is the
-configuration's hash, `s` the model state, `V` the memo of failed configurations. -/
-def fsearch (rem : List (Fin ops.size)) (ev : List (Ev ops.size)) (zh : UInt64) (s : σ)
+/-- **The executable search.** The remaining operations are split into those that returned
+(`remR`, whose invocations and responses are in the sorted event list `ev`) and those that
+never returned (`remP`, ordered by invocation). Moves of returned operations are tried
+first; operations that never returned are tried only when those fail, so the ones that are
+never needed cost nothing on the way to a linearization. `zh` is the configuration's hash,
+`s` the model state, `V` the memo of failed configurations. -/
+def fsearch (remR remP : List (Fin ops.size)) (ev : List (Ev ops.size)) (zh : UInt64) (s : σ)
     (V : Memo ops (σ := σ)) : Bool × Memo ops (σ := σ) :=
-  if V.contains ⟨zh, rem, s⟩ then (false, V)
+  if V.contains ⟨zh, remR, remP, s⟩ then (false, V)
   else
     match hs : scan ev [] with
     | (_, none) => (true, V)
-    | (cs, some _) =>
-      match anyThread (fcands M P ops cs s).attach V
-          (fun c V => fsearch (rem.erase c.1.1.idx) (removeEv ops ev c.1.1)
+    | (cs, some m) =>
+      match anyThread (fcandsR M P ops cs s).attach V
+          (fun c V => fsearch (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
             (zh ^^^ zobrist c.1.1.idx) c.1.2 V) with
       | (true, V') => (true, V')
-      | (false, V') => (false, V'.insert ⟨zh, rem, s⟩)
-termination_by ev.length
+      | (false, V') =>
+        match anyThread (fcandsP M P ops remP m s).attach V'
+            (fun c V => fsearch remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1) c.1.2 V) with
+        | (true, V'') => (true, V'')
+        | (false, V'') => (false, V''.insert ⟨zh, remR, remP, s⟩)
+termination_by ev.length + remP.length
 decreasing_by
-  obtain ⟨e, he, hc⟩ := List.mem_flatMap.1 c.2
-  obtain ⟨_, _, hce⟩ := List.mem_map.1 hc
-  rw [← hce]
-  have he' : e ∈ (scan ev []).1 := by rw [hs]; exact he
-  rcases scan_mem ev [] e he' with h | h
-  · simp at h
-  · exact length_removeEv ops h
+  · obtain ⟨e, he, hc⟩ := List.mem_flatMap.1 c.2
+    obtain ⟨_, _, hce⟩ := List.mem_map.1 hc
+    rw [← hce]
+    have he' : e ∈ (scan ev []).1 := by rw [hs]; exact he
+    rcases scan_mem ev [] e he' with h | h
+    · simp at h
+    · have := length_removeEv ops h
+      dsimp only at this ⊢
+      omega
+  · have hx : c.1.1 ∈ remP := ((mem_fcandsP M P ops).1 c.2).1
+    have := length_erase_lt hx
+    omega
 
 /-- Every configuration in the memo is one from which `search` fails. -/
 def MemoOK (V : Memo ops (σ := σ)) : Prop :=
-  ∀ k : Key ops.size σ, V.contains k = true → search M P ops k.rem k.s = false
+  ∀ k : Key ops.size σ, V.contains k = true → search M P ops (k.remR ++ k.remP) k.s = false
 
 theorem memoOK_empty : MemoOK M P ops ∅ := by
   intro k h
   simp at h
 
+/-- The invariant of the fast search. -/
+def FInv (remR remP : List (Fin ops.size)) (ev : List (Ev ops.size)) : Prop :=
+  EvInv ops remR ev ∧ (remR ++ remP).Nodup ∧
+    (∀ x ∈ remR, (op ops x).ret.isSome) ∧ (∀ x ∈ remP, (op ops x).ret = none)
+
+omit [DecidableEq σ] [Hashable σ] in
+theorem minRet_append_pending {remR remP : List (Fin ops.size)}
+    (h : ∀ x ∈ remP, (op ops x).ret = none) : minRet ops (remR ++ remP) = minRet ops remR := by
+  have : (remP.filterMap fun j => (op ops j).ret.map Prod.fst) = [] := by
+    rw [List.filterMap_eq_nil_iff]
+    intro x hx
+    simp [h x hx]
+  simp only [minRet, List.filterMap_append, this, List.append_nil]
+
 theorem fsearch_eq :
-    ∀ (n : Nat) (rem : List (Fin ops.size)) (ev : List (Ev ops.size)) (zh : UInt64) (s : σ)
-      (V : Memo ops (σ := σ)),
-      ev.length = n → EvInv ops rem ev → MemoOK M P ops V →
-      (fsearch M P ops rem ev zh s V).1 = search M P ops rem s ∧
-        MemoOK M P ops (fsearch M P ops rem ev zh s V).2 := by
+    ∀ (n : Nat) (remR remP : List (Fin ops.size)) (ev : List (Ev ops.size)) (zh : UInt64)
+      (s : σ) (V : Memo ops (σ := σ)),
+      ev.length + remP.length = n → FInv ops remR remP ev → MemoOK M P ops V →
+      (fsearch M P ops remR remP ev zh s V).1 = search M P ops (remR ++ remP) s ∧
+        MemoOK M P ops (fsearch M P ops remR remP ev zh s V).2 := by
   intro n
   induction n using Nat.strongRecOn with
   | ind n ih =>
-    intro rem ev zh s V hlen hI hV
+    intro remR remP ev zh s V hlen hI hV
+    obtain ⟨hEv, hnd, hret, hpend⟩ := hI
     rw [fsearch]
-    by_cases hc : V.contains ⟨zh, rem, s⟩ = true
+    by_cases hc : V.contains ⟨zh, remR, remP, s⟩ = true
     · simp only [hc, ↓reduceIte]
       exact ⟨(hV _ hc).symm, hV⟩
     · simp only [hc, Bool.false_eq_true, ↓reduceIte]
-      have hmr := scan_minRet ops hI
+      have hmr := scan_minRet ops hEv
+      rw [← minRet_append_pending ops (remR := remR) hpend] at hmr
       rw [search_eq]
       split
       · rename_i hs
@@ -507,77 +555,131 @@ theorem fsearch_eq :
         rw [hs] at hmr
         rw [← hmr]
         simp only
-        have hcs := scan_cands ops hI (by rw [hs])
+        have hcs := scan_cands ops hEv (by rw [hs])
         rw [hs] at hcs
         obtain ⟨hcs1, hcs2⟩ := hcs
-        -- every recursive call is correct and keeps the memo sound
-        have hrec : ∀ c ∈ (fcands M P ops cs s).attach, ∀ V', MemoOK M P ops V' →
-            (fsearch M P ops (rem.erase c.1.1.idx) (removeEv ops ev c.1.1)
+        have hndR : remR.Nodup := (List.nodup_append.1 hnd).1
+        have hdisj := (List.nodup_append.1 hnd).2.2
+        -- the two kinds of moves, as erasures from `remR ++ remP`
+        have hR : ∀ x ∈ remR, (remR.erase x) ++ remP = (remR ++ remP).erase x :=
+          fun x hx => (List.erase_append_left remP hx).symm
+        have hP : ∀ x ∈ remP, remR ++ remP.erase x = (remR ++ remP).erase x :=
+          fun x hx => (List.erase_append_right remP (fun h => hdisj x h x hx rfl)).symm
+        -- recursive calls on returned operations
+        have hrecR : ∀ c ∈ (fcandsR M P ops cs s).attach, ∀ V', MemoOK M P ops V' →
+            (fsearch M P ops (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
                 (zh ^^^ zobrist c.1.1.idx) c.1.2 V').1 =
-              search M P ops (rem.erase c.1.1.idx) c.1.2 ∧
-            MemoOK M P ops (fsearch M P ops (rem.erase c.1.1.idx) (removeEv ops ev c.1.1)
+              search M P ops ((remR ++ remP).erase c.1.1.idx) c.1.2 ∧
+            MemoOK M P ops (fsearch M P ops (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
                 (zh ^^^ zobrist c.1.1.idx) c.1.2 V').2 := by
           intro c _ V' hV'
           obtain ⟨e, he, hce⟩ := List.mem_flatMap.1 c.2
           obtain ⟨_, _, hce⟩ := List.mem_map.1 hce
           rw [← hce]
           obtain ⟨heev, hecall⟩ := hcs1 e he
-          have hlt : (removeEv ops ev e).length < n := hlen ▸ length_removeEv ops heev
-          exact ih _ hlt _ _ _ _ _ rfl (evInv_remove ops hI heev hecall) hV'
+          have hxR : e.idx ∈ remR := ((hEv.2.2.2 e).1 heev).1
+          have hlt : (removeEv ops ev e).length + remP.length < n :=
+            hlen ▸ (by have := length_removeEv ops heev; omega)
+          rw [← hR _ hxR]
+          refine ih _ hlt _ _ _ _ _ _ rfl ⟨evInv_remove ops hEv heev hecall, ?_, ?_, hpend⟩ hV'
+          · rw [hR _ hxR]; exact hnd.erase _
+          · exact fun y hy => hret y (List.mem_of_mem_erase hy)
+        -- recursive calls on operations that never returned
+        have hrecP : ∀ c ∈ (fcandsP M P ops remP m s).attach, ∀ V', MemoOK M P ops V' →
+            (fsearch M P ops remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1) c.1.2 V').1 =
+              search M P ops ((remR ++ remP).erase c.1.1) c.1.2 ∧
+            MemoOK M P ops
+              (fsearch M P ops remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1) c.1.2 V').2 := by
+          intro c _ V' hV'
+          have hxP : c.1.1 ∈ remP := ((mem_fcandsP M P ops).1 c.2).1
+          have hlt : ev.length + (remP.erase c.1.1).length < n := by
+            have := length_erase_lt hxP
+            omega
+          rw [← hP _ hxP]
+          refine ih _ hlt _ _ _ _ _ _ rfl ⟨hEv, ?_, hret, ?_⟩ hV'
+          · rw [hP _ hxP]; exact hnd.erase _
+          · exact fun y hy => hpend y (List.mem_of_mem_erase hy)
         obtain ⟨h1, h2⟩ := anyThread_spec
-          (fun (c : {x // x ∈ fcands M P ops cs s}) => search M P ops (rem.erase c.1.1.idx) c.1.2)
+          (fun (c : {x // x ∈ fcandsR M P ops cs s}) =>
+            search M P ops ((remR ++ remP).erase c.1.1.idx) c.1.2)
           (MemoOK M P ops)
-          (fun (c : {x // x ∈ fcands M P ops cs s}) V =>
-            fsearch M P ops (rem.erase c.1.1.idx) (removeEv ops ev c.1.1)
+          (fun (c : {x // x ∈ fcandsR M P ops cs s}) V =>
+            fsearch M P ops (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
               (zh ^^^ zobrist c.1.1.idx) c.1.2 V)
-          _ hrec V hV
+          _ hrecR V hV
         -- the fast candidates and `cands` lead to the same answer
-        have hany : ((fcands M P ops cs s).attach.any fun c =>
-              search M P ops (rem.erase c.1.1.idx) c.1.2) =
-            ((cands M P ops rem s m).attach.any fun c =>
-              search M P ops (rem.erase c.1.1) c.1.2) := by
+        have hany : ((cands M P ops (remR ++ remP) s m).attach.any fun c =>
+              search M P ops ((remR ++ remP).erase c.1.1) c.1.2) =
+            (((fcandsR M P ops cs s).attach.any fun c =>
+              search M P ops ((remR ++ remP).erase c.1.1.idx) c.1.2) ||
+             ((fcandsP M P ops remP m s).attach.any fun c =>
+              search M P ops ((remR ++ remP).erase c.1.1) c.1.2)) := by
           apply Bool.eq_iff_iff.2
-          simp only [List.any_eq_true, List.mem_attach, true_and, Subtype.exists]
+          simp only [Bool.or_eq_true, List.any_eq_true, List.mem_attach, true_and,
+            Subtype.exists]
           constructor
-          · rintro ⟨⟨e, s'⟩, hc, hrec⟩
-            obtain ⟨e', he', hce⟩ := List.mem_flatMap.1 hc
-            obtain ⟨s'', hs'', hce⟩ := List.mem_map.1 hce
-            rw [List.mem_filter] at hs''
-            simp only [Prod.mk.injEq] at hce
-            obtain ⟨rfl, rfl⟩ := hce
-            obtain ⟨heev, hecall⟩ := hcs1 e' he'
-            have hgen := ((hI.2.2.2 e').1 heev).2
-            have heq := genuine_call ops hgen hecall
-            have hx := (hcs2 e'.idx).1 (heq ▸ he')
-            exact ⟨(e'.idx, s''), (mem_cands M P ops).2 ⟨hx.1, hx.2, hs''.1, hs''.2⟩, hrec⟩
           · rintro ⟨⟨x, s'⟩, hc, hrec⟩
             obtain ⟨hx, hcall, hs', hk⟩ := (mem_cands M P ops).1 hc
-            have he := (hcs2 x).2 ⟨hx, hcall⟩
-            refine ⟨(callEv ops x, s'), ?_, hrec⟩
-            exact List.mem_flatMap.2 ⟨callEv ops x, he,
-              List.mem_map.2 ⟨s', List.mem_filter.2 ⟨hs', hk⟩, rfl⟩⟩
-        rw [← hany]
-        rcases hat : anyThread (fcands M P ops cs s).attach V
-            (fun c V => fsearch M P ops (rem.erase c.1.1.idx) (removeEv ops ev c.1.1)
+            rcases List.mem_append.1 hx with hx | hx
+            · left
+              have he := (hcs2 x).2 ⟨hx, hcall⟩
+              exact ⟨(callEv ops x, s'), List.mem_flatMap.2 ⟨callEv ops x, he,
+                List.mem_map.2 ⟨s', List.mem_filter.2 ⟨hs', hk⟩, rfl⟩⟩, hrec⟩
+            · right
+              exact ⟨(x, s'), (mem_fcandsP M P ops).2 ⟨hx, hcall, hs', hk⟩, hrec⟩
+          · rintro (⟨⟨e, s'⟩, hc, hrec⟩ | ⟨⟨x, s'⟩, hc, hrec⟩)
+            · obtain ⟨e', he', hce⟩ := List.mem_flatMap.1 hc
+              obtain ⟨s'', hs'', hce⟩ := List.mem_map.1 hce
+              rw [List.mem_filter] at hs''
+              simp only [Prod.mk.injEq] at hce
+              obtain ⟨rfl, rfl⟩ := hce
+              obtain ⟨heev, hecall⟩ := hcs1 e' he'
+              have hgen := ((hEv.2.2.2 e').1 heev).2
+              have heq := genuine_call ops hgen hecall
+              have hx := (hcs2 e'.idx).1 (heq ▸ he')
+              exact ⟨(e'.idx, s''), (mem_cands M P ops).2
+                ⟨List.mem_append_left _ hx.1, hx.2, hs''.1, hs''.2⟩, hrec⟩
+            · obtain ⟨hx, hcall, hs', hk⟩ := (mem_fcandsP M P ops).1 hc
+              exact ⟨(x, s'), (mem_cands M P ops).2
+                ⟨List.mem_append_right _ hx, hcall, hs', hk⟩, hrec⟩
+        rw [hany]
+        rcases hat : anyThread (fcandsR M P ops cs s).attach V
+            (fun c V => fsearch M P ops (remR.erase c.1.1.idx) remP (removeEv ops ev c.1.1)
               (zh ^^^ zobrist c.1.1.idx) c.1.2 V) with ⟨b, V'⟩
         rw [hat] at h1 h2
         simp only at h1 h2
         cases b with
-        | true => exact ⟨h1, h2⟩
+        | true => exact ⟨by rw [← h1]; rfl, h2⟩
         | false =>
           dsimp only
-          refine ⟨h1, ?_⟩
-          intro k hin
-          rw [Std.HashSet.contains_insert] at hin
-          rcases Bool.or_eq_true_iff.1 hin with heq | hin
-          · have heq : (⟨zh, rem, s⟩ : Key ops.size σ) = k := LawfulBEq.eq_of_beq heq
-            subst heq
-            show search M P ops rem s = false
-            rw [search_eq, ← hmr]
-            simp only
-            rw [← hany]
-            exact h1.symm
-          · exact h2 k hin
+          obtain ⟨h3, h4⟩ := anyThread_spec
+            (fun (c : {x // x ∈ fcandsP M P ops remP m s}) =>
+              search M P ops ((remR ++ remP).erase c.1.1) c.1.2)
+            (MemoOK M P ops)
+            (fun (c : {x // x ∈ fcandsP M P ops remP m s}) V =>
+              fsearch M P ops remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1) c.1.2 V)
+            _ hrecP V' h2
+          rcases hat2 : anyThread (fcandsP M P ops remP m s).attach V'
+              (fun c V => fsearch M P ops remR (remP.erase c.1.1) ev (zh ^^^ zobrist c.1.1)
+                c.1.2 V) with ⟨b2, V''⟩
+          rw [hat2] at h3 h4
+          simp only at h3 h4
+          rw [← h1, ← h3]
+          cases b2 with
+          | true => exact ⟨rfl, h4⟩
+          | false =>
+            refine ⟨rfl, ?_⟩
+            intro k hin
+            rw [Std.HashSet.contains_insert] at hin
+            rcases Bool.or_eq_true_iff.1 hin with heq | hin
+            · have heq : (⟨zh, remR, remP, s⟩ : Key ops.size σ) = k := LawfulBEq.eq_of_beq heq
+              subst heq
+              show search M P ops (remR ++ remP) s = false
+              rw [search_eq, ← hmr]
+              simp only
+              rw [hany, ← h1, ← h3]
+              rfl
+            · exact h4 k hin
 
 end Search
 

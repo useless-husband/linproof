@@ -10,6 +10,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -244,62 +245,126 @@ func median(xs []float64) float64 {
 	return s[len(s)/2]
 }
 
+// porcupineTimed runs Porcupine with a time limit; ok reports whether it finished.
+func porcupineTimed(path, model string, limit time.Duration) (verdict bool, d time.Duration, ok bool, err error) {
+	ops, err := readHistory(path, model)
+	if err != nil {
+		return false, 0, false, err
+	}
+	m, err := modelFor(model)
+	if err != nil {
+		return false, 0, false, err
+	}
+	t0 := time.Now()
+	res := porcupine.CheckOperationsTimeout(m, ops, limit)
+	d = time.Since(t0)
+	if res == porcupine.Unknown {
+		return false, d, false, nil
+	}
+	return res == porcupine.Ok, d, true, nil
+}
+
+// linproofTimed runs the linproof binary with a time limit and returns its verdict, the
+// check time it reports, and its wall time; ok reports whether it finished.
+func linproofTimed(bin, path, model string, limit time.Duration) (verdict bool, check, wall time.Duration, ok bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
+	t0 := time.Now()
+	out, err := exec.CommandContext(ctx, bin, "check", "--model", model, path).Output()
+	wall = time.Since(t0)
+	if ctx.Err() != nil {
+		return false, 0, wall, false, nil
+	}
+	if err != nil {
+		if ee, isExit := err.(*exec.ExitError); !isExit || ee.ExitCode() != 1 {
+			return false, 0, wall, false, fmt.Errorf("linproof on %s: %v", path, err)
+		}
+	}
+	m := checkTime.FindSubmatch(out)
+	if m == nil {
+		return false, 0, wall, false, fmt.Errorf("no timing in linproof output for %s", path)
+	}
+	ms, _ := strconv.ParseFloat(string(m[1])+"."+string(m[2]), 64)
+	return bytes.Contains(out, []byte("\nLINEARIZABLE")), time.Duration(ms * 1e6), wall, true, nil
+}
+
+func fmtCell(ms float64, finished bool, limit time.Duration) string {
+	if !finished {
+		return fmt.Sprintf("> %.0f s", limit.Seconds())
+	}
+	return fmt.Sprintf("%.2f ms", ms)
+}
+
 func cmdBench(args []string) error {
 	fs := flag.NewFlagSet("bench", flag.ExitOnError)
 	bin := fs.String("linproof", "", "path to the linproof binary")
 	model := fs.String("model", "cas-register", "register, cas-register or kv")
 	runs := fs.Int("runs", 5, "runs per file (the median is reported)")
+	limit := fs.Duration("timeout", 60*time.Second, "time limit per run")
 	_ = fs.Parse(args)
 	if *bin == "" {
 		return fmt.Errorf("-linproof is required")
 	}
-	fmt.Printf("%-28s %6s %8s %12s %12s %12s\n", "file", "ops", "verdict", "porcupine", "linproof", "linproof-cli")
+	fmt.Printf("%-28s %7s %9s %12s %12s %12s\n", "file", "ops", "verdict", "porcupine", "linproof", "linproof-cli")
 	var totP, totL, totW float64
+	allDone := true
 	for _, f := range fs.Args() {
 		ops, err := readHistory(f, *model)
 		if err != nil {
 			return err
 		}
 		var pt, lt, wt []float64
+		pDone, lDone := true, true
 		var pv, lv bool
 		for r := 0; r < *runs; r++ {
-			ok, d, err := porcupineVerdict(f, *model)
-			if err != nil {
-				return err
-			}
-			pv = ok
-			pt = append(pt, float64(d.Nanoseconds())/1e6)
-			t0 := time.Now()
-			out, err := exec.Command(*bin, "check", "--model", *model, f).Output()
-			wall := time.Since(t0)
-			if err != nil {
-				if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
-					return fmt.Errorf("linproof on %s: %v", f, err)
+			if pDone {
+				v, d, ok, err := porcupineTimed(f, *model, *limit)
+				if err != nil {
+					return err
 				}
+				pDone = ok
+				pv = v
+				pt = append(pt, float64(d.Nanoseconds())/1e6)
 			}
-			lv = bytes.Contains(out, []byte("\nLINEARIZABLE"))
-			m := checkTime.FindSubmatch(out)
-			if m == nil {
-				return fmt.Errorf("no timing in linproof output for %s", f)
+			if lDone {
+				v, c, w, ok, err := linproofTimed(*bin, f, *model, *limit)
+				if err != nil {
+					return err
+				}
+				lDone = ok
+				lv = v
+				lt = append(lt, float64(c.Nanoseconds())/1e6)
+				wt = append(wt, float64(w.Nanoseconds())/1e6)
 			}
-			ms, _ := strconv.ParseFloat(string(m[1])+"."+string(m[2]), 64)
-			lt = append(lt, ms)
-			wt = append(wt, float64(wall.Nanoseconds())/1e6)
+			if !pDone && !lDone {
+				break
+			}
 		}
-		if pv != lv {
+		v := "?"
+		switch {
+		case pDone && lDone && pv != lv:
 			return fmt.Errorf("%s: verdicts differ (porcupine %v, linproof %v)", f, pv, lv)
-		}
-		v := "ok"
-		if !pv {
+		case pDone && pv, lDone && lv:
+			v = "ok"
+		case pDone || lDone:
 			v = "VIOLATION"
 		}
 		p, l, w := median(pt), median(lt), median(wt)
-		totP += p
-		totL += l
-		totW += w
-		fmt.Printf("%-28s %6d %8s %9.2f ms %9.2f ms %9.2f ms\n", filepath.Base(f), len(ops), v, p, l, w)
+		if pDone && lDone {
+			totP += p
+			totL += l
+			totW += w
+		} else {
+			allDone = false
+		}
+		fmt.Printf("%-28s %7d %9s %12s %12s %12s\n", filepath.Base(f), len(ops), v,
+			fmtCell(p, pDone, *limit), fmtCell(l, lDone, *limit), fmtCell(w, lDone, *limit))
 	}
-	fmt.Printf("%-28s %6s %8s %9.2f ms %9.2f ms %9.2f ms\n", "total", "", "", totP, totL, totW)
+	note := ""
+	if !allDone {
+		note = "  (files where a tool timed out are left out of the total)"
+	}
+	fmt.Printf("%-28s %7s %9s %9.2f ms %9.2f ms %9.2f ms%s\n", "total", "", "", totP, totL, totW, note)
 	return nil
 }
 

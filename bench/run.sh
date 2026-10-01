@@ -32,7 +32,7 @@ gen register-10k     -model register     -ops 10000  -procs 5  -values 50 -pendi
 gen register-100k    -model register     -ops 100000 -procs 5  -values 50 -pending 0    -seed 3
 gen cas-10k-crash    -model cas-register -ops 10000  -procs 5  -values 5  -pending 0.01 -seed 4
 gen cas-100k-crash   -model cas-register -ops 100000 -procs 5  -values 5  -pending 0.01 -seed 4
-gen cas-10k-bad      -model cas-register -ops 10000  -procs 5  -values 5  -pending 0    -seed 6 -corrupt
+gen cas-10k-bad      -model cas-register -ops 10000  -procs 5  -values 5  -pending 0    -seed 7 -corrupt
 gen cas-10k-crash-bad -model cas-register -ops 10000 -procs 5  -values 5  -pending 0.01 -seed 4 -corrupt
 gen kv-100k-100keys  -model kv -ops 100000 -procs 20 -keys 100 -pending 0.01           -seed 5
 
